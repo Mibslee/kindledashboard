@@ -1,0 +1,98 @@
+{
+  "items": [
+    {
+      "name": "KindleDashboard",
+      "priority": -997,
+      "items": [
+        {
+          "name": "Show Once",
+          "priority": 1,
+          "action": "./bin/show_once.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Start Auto Refresh",
+          "priority": 2,
+          "action": "./bin/start.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Start Clean Dashboard",
+          "priority": 3,
+          "action": "./bin/start_clean_dashboard.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Stop Clean Dashboard",
+          "priority": 4,
+          "action": "./bin/stop_clean_dashboard.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Stop Auto Refresh",
+          "priority": 5,
+          "action": "./bin/stop.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Battery Probe",
+          "priority": 6,
+          "action": "./bin/battery_probe.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "UI Probe",
+          "priority": 7,
+          "action": "./bin/ui_probe.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Statusbar Pause Test",
+          "priority": 8,
+          "action": "./bin/statusbar_pause_test.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Restore Statusbar",
+          "priority": 9,
+          "action": "./bin/restore_statusbar.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Charge Guard Test",
+          "priority": 10,
+          "action": "./bin/charge_guard_test.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        },
+        {
+          "name": "Restore Charging",
+          "priority": 11,
+          "action": "./bin/charge_restore.sh",
+          "exitmenu": true,
+          "refresh": false,
+          "status": false
+        }
+      ]
+    }
+  ]
+}
