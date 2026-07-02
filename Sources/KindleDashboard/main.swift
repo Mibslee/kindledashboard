@@ -1778,10 +1778,13 @@ final class DashboardServer: @unchecked Sendable {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let state = AppState()
     private var statusItem: NSStatusItem!
     private var server: DashboardServer!
+    private var cycleMenuItems: [NSMenuItem] = []
+    private var frontlightMenuItems: [NSMenuItem] = []
+    private var batteryProtectionMenuItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1801,6 +1804,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.toolTip = "KindleDashboard"
 
         let menu = NSMenu()
+        menu.delegate = self
         for mode in KindleMode.allCases {
             let item = NSMenuItem(title: mode.menuTitle, action: #selector(selectMode(_:)), keyEquivalent: "")
             item.representedObject = mode.rawValue
@@ -1822,14 +1826,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let landscape = NSMenuItem(title: "横屏布局（保留）", action: #selector(selectLandscape), keyEquivalent: "")
         landscape.target = self
         menu.addItem(landscape)
-        let cycle = NSMenuItem(title: "切换自动轮换", action: #selector(toggleCycle), keyEquivalent: "")
+        let cycle = NSMenuItem(title: "自动轮换：已关闭", action: #selector(toggleCycle), keyEquivalent: "")
         cycle.target = self
+        cycleMenuItems.append(cycle)
         menu.addItem(cycle)
 
         menu.addItem(.separator())
         menu.addItem(menuItem("立即刷新 Kindle", #selector(refreshKindleNow)))
-        menu.addItem(menuItem("Kindle 背光开/关", #selector(toggleFrontlight)))
-        menu.addItem(menuItem("电池保护模式 45%-55%", #selector(toggleBatteryProtection)))
+        menu.addItem(statefulMenuItem("Kindle 背光：已关闭", #selector(toggleFrontlight), storeIn: &frontlightMenuItems))
+        menu.addItem(statefulMenuItem("电池保护：已关闭（45%-55%）", #selector(toggleBatteryProtection), storeIn: &batteryProtectionMenuItems))
         let refreshRate = NSMenuItem(title: "刷新策略", action: nil, keyEquivalent: "")
         let refreshRateMenu = NSMenu()
         refreshRateMenu.addItem(infoMenuItem("轻刷新：每 1 分钟"))
@@ -1849,8 +1854,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsMenu.addItem(menuItem("复制控制页地址", #selector(copyURL)))
         settingsMenu.addItem(menuItem("复制真全屏地址", #selector(copyFrameURL)))
         settingsMenu.addItem(menuItem("立即刷新 Kindle", #selector(refreshKindleNow)))
-        settingsMenu.addItem(menuItem("Kindle 背光开/关", #selector(toggleFrontlight)))
-        settingsMenu.addItem(menuItem("电池保护模式 45%-55%", #selector(toggleBatteryProtection)))
+        settingsMenu.addItem(statefulMenuItem("Kindle 背光：已关闭", #selector(toggleFrontlight), storeIn: &frontlightMenuItems))
+        settingsMenu.addItem(statefulMenuItem("电池保护：已关闭（45%-55%）", #selector(toggleBatteryProtection), storeIn: &batteryProtectionMenuItems))
         let settingsRefreshRate = NSMenuItem(title: "刷新策略", action: nil, keyEquivalent: "")
         let settingsRefreshRateMenu = NSMenu()
         settingsRefreshRateMenu.addItem(infoMenuItem("轻刷新：每 1 分钟"))
@@ -1858,18 +1863,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsRefreshRateMenu.addItem(infoMenuItem("页面切换：立即轻刷新"))
         settingsRefreshRate.submenu = settingsRefreshRateMenu
         settingsMenu.addItem(settingsRefreshRate)
-        settingsMenu.addItem(menuItem("切换自动轮换", #selector(toggleCycle)))
+        let settingsCycle = NSMenuItem(title: "自动轮换：已关闭", action: #selector(toggleCycle), keyEquivalent: "")
+        settingsCycle.target = self
+        cycleMenuItems.append(settingsCycle)
+        settingsMenu.addItem(settingsCycle)
         settingsMenu.addItem(.separator())
         settingsMenu.addItem(menuItem("退出", #selector(quit)))
         settings.submenu = settingsMenu
         menu.addItem(settings)
         menu.addItem(menuItem("退出", #selector(quit)))
         statusItem.menu = menu
+        updateControlMenuState()
     }
 
     private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
+        return item
+    }
+
+    private func statefulMenuItem(_ title: String, _ action: Selector, storeIn storage: inout [NSMenuItem]) -> NSMenuItem {
+        let item = menuItem(title, action)
+        storage.append(item)
         return item
     }
 
@@ -2029,6 +2044,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateTitle() {
         let snapshot = state.snapshot()
         statusItem.button?.toolTip = "KindleDashboard: \(snapshot.mode.title)"
+        updateControlMenuState(snapshot)
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        updateControlMenuState()
+    }
+
+    private func updateControlMenuState(_ existingSnapshot: AppSnapshot? = nil) {
+        let snapshot = existingSnapshot ?? state.snapshot()
+
+        for item in cycleMenuItems {
+            item.title = snapshot.cycleEnabled ? "自动轮换：已开启" : "自动轮换：已关闭"
+            item.state = snapshot.cycleEnabled ? .on : .off
+        }
+
+        for item in frontlightMenuItems {
+            if snapshot.frontlightEnabled {
+                item.title = "Kindle 背光：已开启（\(snapshot.frontlightLevel)）"
+                item.state = .on
+            } else {
+                item.title = "Kindle 背光：已关闭"
+                item.state = .off
+            }
+        }
+
+        for item in batteryProtectionMenuItems {
+            if snapshot.batteryProtectionEnabled {
+                item.title = "电池保护：已开启（\(snapshot.batteryLowerLimit)%-\(snapshot.batteryUpperLimit)%）"
+                item.state = .on
+            } else {
+                item.title = "电池保护：已关闭（\(snapshot.batteryLowerLimit)%-\(snapshot.batteryUpperLimit)%）"
+                item.state = .off
+            }
+        }
     }
 
     private func projectImageFile(_ url: URL, title overrideTitle: String? = nil) {

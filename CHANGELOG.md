@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.1
+
+### Added
+
+- Documented the Mac menu-bar controller as a first-class product feature.
+- Added stateful Mac menu labels and checkmarks for Kindle frontlight, battery protection, and auto rotation.
+
+### Changed
+
+- Clarified the user value of page switching, immediate refresh, frontlight control, battery protection, Markdown projection, image projection, and music controls.
+
 ## v0.2.0
 
 This is the first public-ready release candidate for KindleDashboard.
