@@ -1782,6 +1782,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let state = AppState()
     private var statusItem: NSStatusItem!
     private var server: DashboardServer!
+    private var settingsMenuItem: NSMenuItem?
     private var cycleMenuItems: [NSMenuItem] = []
     private var frontlightMenuItems: [NSMenuItem] = []
     private var batteryProtectionMenuItems: [NSMenuItem] = []
@@ -1798,6 +1799,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setupMenu() {
+        settingsMenuItem = nil
+        cycleMenuItems.removeAll()
+        frontlightMenuItems.removeAll()
+        batteryProtectionMenuItems.removeAll()
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = makeStatusIcon()
         statusItem.button?.imagePosition = .imageOnly
@@ -1819,29 +1825,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("投射图片...", #selector(openProjectionImage)))
         menu.addItem(menuItem("投射当前截屏", #selector(projectScreenshot)))
-        menu.addItem(.separator())
-        let portrait = NSMenuItem(title: "竖屏布局", action: #selector(selectPortrait), keyEquivalent: "")
-        portrait.target = self
-        menu.addItem(portrait)
-        let landscape = NSMenuItem(title: "横屏布局（保留）", action: #selector(selectLandscape), keyEquivalent: "")
-        landscape.target = self
-        menu.addItem(landscape)
-        let cycle = NSMenuItem(title: "自动轮换：已关闭", action: #selector(toggleCycle), keyEquivalent: "")
-        cycle.target = self
-        cycleMenuItems.append(cycle)
-        menu.addItem(cycle)
 
         menu.addItem(.separator())
         menu.addItem(menuItem("立即刷新 Kindle", #selector(refreshKindleNow)))
-        menu.addItem(statefulMenuItem("Kindle 背光：已关闭", #selector(toggleFrontlight), storeIn: &frontlightMenuItems))
-        menu.addItem(statefulMenuItem("电池保护：已关闭（45%-55%）", #selector(toggleBatteryProtection), storeIn: &batteryProtectionMenuItems))
-        let refreshRate = NSMenuItem(title: "刷新策略", action: nil, keyEquivalent: "")
-        let refreshRateMenu = NSMenu()
-        refreshRateMenu.addItem(infoMenuItem("轻刷新：每 1 分钟"))
-        refreshRateMenu.addItem(infoMenuItem("全刷新：每 5 分钟"))
-        refreshRateMenu.addItem(infoMenuItem("页面切换：立即轻刷新"))
-        refreshRate.submenu = refreshRateMenu
-        menu.addItem(refreshRate)
 
         menu.addItem(.separator())
         menu.addItem(menuItem("播放 / 暂停音乐", #selector(playPause)))
@@ -1850,12 +1836,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         let settings = NSMenuItem(title: "设置", action: nil, keyEquivalent: "")
+        settingsMenuItem = settings
         let settingsMenu = NSMenu()
-        settingsMenu.addItem(menuItem("复制控制页地址", #selector(copyURL)))
-        settingsMenu.addItem(menuItem("复制真全屏地址", #selector(copyFrameURL)))
-        settingsMenu.addItem(menuItem("立即刷新 Kindle", #selector(refreshKindleNow)))
         settingsMenu.addItem(statefulMenuItem("Kindle 背光：已关闭", #selector(toggleFrontlight), storeIn: &frontlightMenuItems))
         settingsMenu.addItem(statefulMenuItem("电池保护：已关闭（45%-55%）", #selector(toggleBatteryProtection), storeIn: &batteryProtectionMenuItems))
+        let settingsCycle = NSMenuItem(title: "自动轮换：已关闭", action: #selector(toggleCycle), keyEquivalent: "")
+        settingsCycle.target = self
+        cycleMenuItems.append(settingsCycle)
+        settingsMenu.addItem(settingsCycle)
+        settingsMenu.addItem(.separator())
+        let portrait = NSMenuItem(title: "竖屏布局", action: #selector(selectPortrait), keyEquivalent: "")
+        portrait.target = self
+        settingsMenu.addItem(portrait)
+        let landscape = NSMenuItem(title: "横屏布局（保留）", action: #selector(selectLandscape), keyEquivalent: "")
+        landscape.target = self
+        settingsMenu.addItem(landscape)
+        settingsMenu.addItem(.separator())
         let settingsRefreshRate = NSMenuItem(title: "刷新策略", action: nil, keyEquivalent: "")
         let settingsRefreshRateMenu = NSMenu()
         settingsRefreshRateMenu.addItem(infoMenuItem("轻刷新：每 1 分钟"))
@@ -1863,12 +1859,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsRefreshRateMenu.addItem(infoMenuItem("页面切换：立即轻刷新"))
         settingsRefreshRate.submenu = settingsRefreshRateMenu
         settingsMenu.addItem(settingsRefreshRate)
-        let settingsCycle = NSMenuItem(title: "自动轮换：已关闭", action: #selector(toggleCycle), keyEquivalent: "")
-        settingsCycle.target = self
-        cycleMenuItems.append(settingsCycle)
-        settingsMenu.addItem(settingsCycle)
         settingsMenu.addItem(.separator())
-        settingsMenu.addItem(menuItem("退出", #selector(quit)))
+        settingsMenu.addItem(menuItem("复制控制页地址", #selector(copyURL)))
+        settingsMenu.addItem(menuItem("复制真全屏地址", #selector(copyFrameURL)))
         settings.submenu = settingsMenu
         menu.addItem(settings)
         menu.addItem(menuItem("退出", #selector(quit)))
@@ -2053,6 +2046,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateControlMenuState(_ existingSnapshot: AppSnapshot? = nil) {
         let snapshot = existingSnapshot ?? state.snapshot()
+        let frontlightSummary = snapshot.frontlightEnabled ? "背光开" : "背光关"
+        let batterySummary = snapshot.batteryProtectionEnabled ? "电池保护开" : "电池保护关"
+        settingsMenuItem?.title = "设置（\(frontlightSummary) · \(batterySummary)）"
 
         for item in cycleMenuItems {
             item.title = snapshot.cycleEnabled ? "自动轮换：已开启" : "自动轮换：已关闭"
