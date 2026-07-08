@@ -46,6 +46,21 @@ enum KindleMode: String, CaseIterable, Identifiable {
         case .screensaver: return "屏保"
         }
     }
+
+    var menuSymbolName: String {
+        switch self {
+        case .home: return "house"
+        case .codex: return "terminal"
+        case .document: return "doc.text"
+        case .image: return "camera"
+        case .music: return "music.note"
+        case .weather: return "sun.max"
+        case .calendar: return "calendar"
+        case .focus: return "scope"
+        case .system: return "desktopcomputer"
+        case .screensaver: return "moon"
+        }
+    }
 }
 
 enum KindleOrientation: String, CaseIterable {
@@ -73,7 +88,8 @@ struct AppSnapshot {
     let cycleEnabled: Bool
     let cycleInterval: TimeInterval
     let refreshSerial: Int
-    let kindleRefreshInterval: Int
+    let lightRefreshInterval: Int
+    let fullRefreshInterval: Int
     let frontlightEnabled: Bool
     let frontlightLevel: Int
     let batteryProtectionEnabled: Bool
@@ -95,7 +111,8 @@ final class AppState: @unchecked Sendable {
     private var cycleEnabled = false
     private var cycleInterval: TimeInterval = 90
     private var refreshSerial = 1
-    private var kindleRefreshInterval = 20
+    private var lightRefreshInterval = 60
+    private var fullRefreshInterval = 300
     private var frontlightEnabled = false
     private var frontlightLevel = 10
     private var batteryProtectionEnabled = false
@@ -145,9 +162,16 @@ final class AppState: @unchecked Sendable {
         lock.unlock()
     }
 
-    func setKindleRefreshInterval(_ seconds: Int) {
+    func setLightRefreshInterval(_ seconds: Int) {
         lock.lock()
-        kindleRefreshInterval = min(600, max(5, seconds))
+        lightRefreshInterval = min(300, max(10, seconds))
+        bumpRefreshLocked()
+        lock.unlock()
+    }
+
+    func setFullRefreshInterval(_ seconds: Int) {
+        lock.lock()
+        fullRefreshInterval = min(1800, max(120, seconds))
         bumpRefreshLocked()
         lock.unlock()
     }
@@ -247,7 +271,8 @@ final class AppState: @unchecked Sendable {
             cycleEnabled: cycleEnabled,
             cycleInterval: cycleInterval,
             refreshSerial: refreshSerial,
-            kindleRefreshInterval: kindleRefreshInterval,
+            lightRefreshInterval: lightRefreshInterval,
+            fullRefreshInterval: fullRefreshInterval,
             frontlightEnabled: frontlightEnabled,
             frontlightLevel: frontlightLevel,
             batteryProtectionEnabled: batteryProtectionEnabled,
@@ -363,6 +388,29 @@ struct DashboardModel {
     }
 }
 
+struct CodexActivity {
+    let currentTask: String
+    let limitStatus: CodexLimitStatus
+    let recentWork: [String]
+    let nextAction: String
+}
+
+struct CodexLimitStatus {
+    let primaryLabel: String
+    let primaryValue: String
+    let weeklyValue: String
+    let resetText: String
+    let health: String
+    let rows: [String]
+}
+
+struct WeatherSnapshot {
+    let current: String
+    let detail: String
+    let advice: String
+    let hourlyRows: [String]
+}
+
 struct DashboardData {
     static func make(snapshot: AppSnapshot) -> DashboardModel {
         let model: DashboardModel
@@ -392,7 +440,7 @@ struct DashboardData {
     }
 
     private static func home(_ snapshot: AppSnapshot) -> DashboardModel {
-        let weather = weatherLine(includeDetail: true)
+        let weather = weatherSnapshot()
         let battery = CommandRunner.shell("pmset -g batt | sed -n '2p' | awk -F';' '{gsub(/^[ \t]+|[ \t]+$/, \"\", $1); gsub(/^[ \t]+|[ \t]+$/, \"\", $2); print $1 \" | \" $2}'")
         let next = nextCalendarLine()
         return DashboardModel(
@@ -402,18 +450,18 @@ struct DashboardData {
             headline: "今日概览",
             subhead: longDate(),
             metrics: [
-                Metric(label: "天气", value: weather.isEmpty ? "天气源暂不可用" : weather, emphasis: true),
+                Metric(label: "现在", value: weather.current, emphasis: true),
                 Metric(label: "日程", value: next, emphasis: false),
                 Metric(label: "Mac", value: battery.isEmpty ? "电量不可用" : battery, emphasis: false),
-                Metric(label: "下一步", value: "Mac 顶栏\n切换内容", emphasis: false)
+                Metric(label: "建议", value: weather.advice, emphasis: false)
             ],
-            notes: ["信息牌已就绪 | 现在", "Mac 顶栏控制页面 | 可切换", "真全屏画面 | 待 Kindle 联调"],
+            notes: ["天气建议 | \(weather.advice)", "下一日程 | \(next)", "刷新节奏 | 轻刷 1 分钟 / 全刷 5 分钟"],
             footer: footer(snapshot)
         )
     }
 
     private static func codex(_ snapshot: AppSnapshot) -> DashboardModel {
-        let sessions = recentCodexSessions()
+        let activity = codexActivity()
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
@@ -421,11 +469,12 @@ struct DashboardData {
             headline: "Codex 看板",
             subhead: timestamp(),
             metrics: [
-                Metric(label: "当前目标", value: "Kindle 副屏", emphasis: true),
-                Metric(label: "构建状态", value: kindleDockBuildStatus(), emphasis: false),
-                Metric(label: "下一步", value: "连接 Kindle，测试真全屏画面", emphasis: false)
+                Metric(label: "当前任务", value: activity.currentTask, emphasis: true),
+                Metric(label: activity.limitStatus.primaryLabel, value: activity.limitStatus.primaryValue, emphasis: false),
+                Metric(label: "周额度", value: activity.limitStatus.weeklyValue, emphasis: false),
+                Metric(label: "重置", value: activity.limitStatus.resetText, emphasis: false)
             ],
-            notes: sessions,
+            notes: activity.limitStatus.rows + ["下一步 | \(activity.nextAction)"] + Array(activity.recentWork.prefix(5)),
             footer: footer(snapshot)
         )
     }
@@ -443,9 +492,9 @@ struct DashboardData {
             headline: snapshot.documentTitle.isEmpty ? "文档" : snapshot.documentTitle,
             subhead: "第 \(page + 1)/\(totalPages) 页 · \(rows.count) 行",
             metrics: [
-                Metric(label: "用途", value: "边看步骤边操作", emphasis: true),
-                Metric(label: "翻页", value: "顶栏菜单 /document/next", emphasis: false),
-                Metric(label: "页码", value: "\(page + 1) / \(totalPages)", emphasis: false)
+                Metric(label: "当前文档", value: snapshot.documentTitle.isEmpty ? "文档" : snapshot.documentTitle, emphasis: true),
+                Metric(label: "页码", value: "\(page + 1) / \(totalPages)", emphasis: false),
+                Metric(label: "剩余", value: "\(max(0, totalPages - page - 1)) 页", emphasis: false)
             ],
             notes: pageRows,
             footer: footer(snapshot)
@@ -461,9 +510,9 @@ struct DashboardData {
             headline: hasImage ? snapshot.imageTitle : "等待投射",
             subhead: "图片 / 截屏投射",
             metrics: [
-                Metric(label: "类型", value: hasImage ? "图片" : "未加载", emphasis: true),
-                Metric(label: "来源", value: "Mac 顶栏", emphasis: false),
-                Metric(label: "用途", value: "截图对照 / 图片预览", emphasis: false)
+                Metric(label: "当前内容", value: hasImage ? snapshot.imageTitle : "等待图片或截屏", emphasis: true),
+                Metric(label: "图片信息", value: hasImage ? snapshot.imageMeta : "未加载", emphasis: false),
+                Metric(label: "下一步", value: hasImage ? "看完后可继续投射" : "从 Mac 顶栏选择", emphasis: false)
             ],
             notes: hasImage ? ["当前图片 | \(snapshot.imageMeta)", "刷新 Kindle | 自动拉取新画面"] : ["打开图片... | 选择本地图片", "投射当前截屏 | 需要屏幕录制权限"],
             footer: footer(snapshot),
@@ -477,15 +526,21 @@ struct DashboardData {
         tell application "Music"
           if it is running then
             if player state is playing then
-              return artist of current track & " - " & name of current track
+              return "播放中|" & artist of current track & "|" & name of current track & "|" & album of current track
             else
-              return "音乐已暂停"
+              return "已暂停|" & artist of current track & "|" & name of current track & "|" & album of current track
             end if
           else
-            return "音乐未运行"
+            return "未运行|||"
           end if
         end tell
         """)
+        let musicParts = nowPlaying.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        let musicState = musicParts.first ?? "未运行"
+        let artist = musicParts.count > 1 ? musicParts[1] : ""
+        let track = musicParts.count > 2 ? musicParts[2] : ""
+        let album = musicParts.count > 3 ? musicParts[3] : ""
+        let title = track.isEmpty ? "音乐未运行" : "\(artist.isEmpty ? "未知艺人" : artist) - \(track)"
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
@@ -493,30 +548,29 @@ struct DashboardData {
             headline: "音乐",
             subhead: timestamp(),
             metrics: [
-                Metric(label: "正在播放", value: nowPlaying.isEmpty ? "不可用" : nowPlaying, emphasis: true),
-                Metric(label: "控制", value: "播放/暂停、上一首、下一首", emphasis: false),
-                Metric(label: "用途", value: "桌面音乐状态与轻控制", emphasis: false)
+                Metric(label: "正在播放", value: title, emphasis: true),
+                Metric(label: "状态", value: musicState, emphasis: false),
+                Metric(label: "专辑", value: album.isEmpty ? "--" : album, emphasis: false)
             ],
-            notes: ["主控制 | 上一首 / 播放 / 下一首", "真全屏 | 显示播放状态", "浏览器模式 | 可点击控制"],
+            notes: ["上一首 | Mac 顶栏 / Kindle 控制页", "播放暂停 | Mac 顶栏 / Kindle 控制页", "下一首 | Mac 顶栏 / Kindle 控制页"],
             footer: footer(snapshot)
         )
     }
 
     private static func weather(_ snapshot: AppSnapshot) -> DashboardModel {
-        let simple = weatherLine(includeDetail: false)
-        let detail = weatherLine(includeDetail: true)
+        let weather = weatherSnapshot()
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
             generatedAt: Date(),
             headline: "天气",
-            subhead: longDate(),
+            subhead: "未来几小时 · \(clockTime()) 更新",
             metrics: [
-                Metric(label: "室外", value: simple.isEmpty ? "天气源不可用" : simple, emphasis: true),
-                Metric(label: "细节", value: detail.isEmpty ? "湿度和风力不可用" : detail, emphasis: false),
-                Metric(label: "用途", value: "判断衣着、开窗、通勤", emphasis: false)
+                Metric(label: "现在", value: weather.current, emphasis: true),
+                Metric(label: "细节", value: weather.detail, emphasis: false),
+                Metric(label: "建议", value: weather.advice, emphasis: false)
             ],
-            notes: ["慢刷新 | 省电", "家庭传感器 | 后续接入", "空气质量 / 湿度 | 后续接入"],
+            notes: weather.hourlyRows,
             footer: footer(snapshot)
         )
     }
@@ -532,16 +586,17 @@ struct DashboardData {
             subhead: longDate(),
             metrics: [
                 Metric(label: "下一项", value: next, emphasis: true),
-                Metric(label: "待办", value: reminders.isEmpty ? "暂未授权提醒事项" : "\(listLines(reminders, fallback: "").count) 项提醒", emphasis: false),
-                Metric(label: "用途", value: "避免漏掉下一项承诺", emphasis: false)
+                Metric(label: "待办", value: reminders.isEmpty ? "暂无提醒事项" : "\(listLines(reminders, fallback: "").count) 项提醒", emphasis: false),
+                Metric(label: "建议", value: (next.contains("暂未") || next.contains("暂无")) ? "留给深度工作" : "提前 10 分钟准备", emphasis: false)
             ],
-            notes: listLines(reminders, fallback: "提醒事项接入 | 需要 macOS 授权"),
+            notes: listLines(reminders, fallback: "今天没有提醒事项 | 可专注"),
             footer: footer(snapshot)
         )
     }
 
     private static func focus(_ snapshot: AppSnapshot) -> DashboardModel {
         let uptime = uptimeSummary()
+        let currentTask = codexActivity().currentTask
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
@@ -549,11 +604,11 @@ struct DashboardData {
             headline: "专注",
             subhead: "专注状态牌",
             metrics: [
-                Metric(label: "时间块", value: "50 分钟", emphasis: true),
-                Metric(label: "意图", value: "一次只做一件事", emphasis: false),
+                Metric(label: "当前任务", value: currentTask, emphasis: true),
+                Metric(label: "时间块", value: "50 分钟", emphasis: false),
                 Metric(label: "Mac", value: uptime.isEmpty ? "就绪" : uptime, emphasis: false)
             ],
-            notes: ["保持当前任务可见 | 当前", "绑定日历专注块 | 后续", "加入休息计时 | 后续", "联动屏保降噪 | 后续"],
+            notes: ["只做一件事 | 当前", "关闭额外页面 | 建议", "50 分钟后休息 | 建议"],
             footer: footer(snapshot)
         )
     }
@@ -564,6 +619,7 @@ struct DashboardData {
         let memory = CommandRunner.shell("vm_stat | awk '/Pages free/ {free=$3} /Pages active/ {active=$3} /Pages wired down/ {wired=$4} END {gsub(/\\./,\"\",free); gsub(/\\./,\"\",active); gsub(/\\./,\"\",wired); printf \"空闲 %.1fGB | 活跃 %.1fGB | 常驻 %.1fGB\", free*4096/1024/1024/1024, active*4096/1024/1024/1024, wired*4096/1024/1024/1024}'")
         let disk = CommandRunner.shell("df -h / | awk 'NR==2 {print \"可用 \" $4 \" / 总 \" $2}'")
         let procs = CommandRunner.shell("ps -arcwwwxo %cpu,%mem,comm | sed -n '2,9p'")
+        let advice = systemAdvice(cpuSummary: cpu, memory: memory)
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
@@ -571,7 +627,8 @@ struct DashboardData {
             headline: "系统",
             subhead: timestamp(),
             metrics: [
-                Metric(label: "CPU", value: cpu, emphasis: true),
+                Metric(label: "状态", value: advice, emphasis: true),
+                Metric(label: "CPU", value: cpu, emphasis: false),
                 Metric(label: "内存", value: memory.isEmpty ? "不可用" : memory, emphasis: false),
                 Metric(label: "磁盘", value: disk.isEmpty ? "不可用" : disk, emphasis: false)
             ],
@@ -590,7 +647,7 @@ struct DashboardData {
             metrics: [
                 Metric(label: "离开", value: "Kindle Dock", emphasis: true),
                 Metric(label: "唤醒", value: "用 Mac 顶栏切换模式", emphasis: false),
-                Metric(label: "用途", value: "空闲时安静显示时间", emphasis: false)
+                Metric(label: "状态", value: "安静显示", emphasis: false)
             ],
             notes: ["安静显示 | 已启用", "每分钟刷新 | 低干扰"],
             footer: footer(snapshot)
@@ -599,7 +656,7 @@ struct DashboardData {
 
     private static func nextCalendarLine() -> String {
         let value = CommandRunner.shell("command -v icalBuddy >/dev/null && icalBuddy -nc -nrd -ea -li 1 eventsToday 2>/dev/null | head -1 || true")
-        return value.isEmpty ? "暂未接入日历" : value
+        return value.isEmpty ? "暂无日程" : value
     }
 
     private static func markdownRows(_ markdown: String) -> [String] {
@@ -644,31 +701,164 @@ struct DashboardData {
         return "室外 \(parts[0])，体感 \(parts[1])"
     }
 
+    private static func weatherSnapshot() -> WeatherSnapshot {
+        let raw = CommandRunner.shell("curl -m 4 -s 'https://wttr.in/?format=j1' 2>/dev/null || true")
+        guard let data = raw.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let current = (root["current_condition"] as? [[String: Any]])?.first else {
+            let fallback = weatherLine(includeDetail: true)
+            return WeatherSnapshot(
+                current: fallback.isEmpty ? "天气源暂不可用" : fallback.replacingOccurrences(of: "\n", with: "，"),
+                detail: fallback.isEmpty ? "等待下次刷新" : "来自 wttr.in",
+                advice: fallback.isEmpty ? "天气源暂不可用" : "出门前看温度和风",
+                hourlyRows: ["天气源暂不可用 | 稍后自动刷新"]
+            )
+        }
+
+        let temp = intText(current["temp_C"]) ?? "--"
+        let feels = intText(current["FeelsLikeC"]) ?? temp
+        let humidity = intText(current["humidity"]) ?? "--"
+        let wind = intText(current["windspeedKmph"]) ?? "--"
+        let desc = weatherDescription(current) ?? "当前天气"
+        let currentText = "\(desc) \(signedTemperature(temp))，体感 \(signedTemperature(feels))"
+        let detailText = "湿度 \(humidity)%｜风 \(wind)km/h"
+
+        let hourly = hourlyWeatherRows(root: root)
+        let advice = weatherAdvice(
+            temperature: Int(temp),
+            feelsLike: Int(feels),
+            humidity: Int(humidity),
+            rows: hourly
+        )
+        return WeatherSnapshot(
+            current: currentText,
+            detail: detailText,
+            advice: advice,
+            hourlyRows: hourly.isEmpty ? ["未来几小时 | 暂无数据"] : hourly
+        )
+    }
+
+    private static func hourlyWeatherRows(root: [String: Any]) -> [String] {
+        guard let days = root["weather"] as? [[String: Any]] else { return [] }
+        let nowHour = Calendar.current.component(.hour, from: Date())
+        let threshold = nowHour * 100
+        var rows: [String] = []
+
+        for (dayIndex, day) in days.prefix(2).enumerated() {
+            guard let hourly = day["hourly"] as? [[String: Any]] else { continue }
+            for item in hourly {
+                guard let timeValue = Int(intText(item["time"]) ?? "") else { continue }
+                if dayIndex == 0, timeValue < threshold { continue }
+                let hour = timeValue / 100
+                let prefix = dayIndex == 0 ? String(format: "%02d:00", hour) : "明天 \(String(format: "%02d:00", hour))"
+                let temp = intText(item["tempC"]) ?? "--"
+                let rain = intText(item["chanceofrain"]) ?? "0"
+                let desc = weatherDescription(item) ?? "天气"
+                rows.append("\(prefix) \(desc) \(signedTemperature(temp)) | 降水 \(rain)%")
+                if rows.count >= 5 { return rows }
+            }
+        }
+        return rows
+    }
+
+    private static func weatherDescription(_ object: [String: Any]) -> String? {
+        if let descriptions = object["weatherDesc"] as? [[String: Any]],
+           let value = descriptions.first?["value"] as? String,
+           !value.isEmpty {
+            return localizedWeather(value)
+        }
+        return nil
+    }
+
+    private static func localizedWeather(_ value: String) -> String {
+        let lower = value.lowercased()
+        if lower.contains("rain") || lower.contains("drizzle") { return "有雨" }
+        if lower.contains("snow") { return "有雪" }
+        if lower.contains("thunder") { return "雷雨" }
+        if lower.contains("fog") || lower.contains("mist") { return "雾" }
+        if lower.contains("cloud") || lower.contains("overcast") { return "多云" }
+        if lower.contains("sun") || lower.contains("clear") { return "晴" }
+        return value
+    }
+
+    private static func weatherAdvice(temperature: Int?, feelsLike: Int?, humidity: Int?, rows: [String]) -> String {
+        let rowText = rows.joined(separator: " ")
+        if rowText.range(of: #"降水 ([6-9]\d|100)%"#, options: .regularExpression) != nil {
+            return "带伞，避开强降水"
+        }
+        if let feelsLike, feelsLike >= 34 {
+            return "闷热，少外出多补水"
+        }
+        if let temperature, temperature <= 5 {
+            return "偏冷，注意保暖"
+        }
+        if let humidity, humidity >= 80 {
+            return "湿度高，少开窗"
+        }
+        return "天气稳定，可正常出行"
+    }
+
+    private static func signedTemperature(_ value: String) -> String {
+        guard let number = Int(value) else { return "\(value)°C" }
+        return number > 0 ? "+\(number)°C" : "\(number)°C"
+    }
+
+    private static func intText(_ value: Any?) -> String? {
+        if let string = value as? String {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let number = value as? NSNumber {
+            return "\(number.intValue)"
+        }
+        return nil
+    }
+
     private static func cpuSummary(_ raw: String) -> String {
         guard !raw.isEmpty else { return "不可用" }
-        let normalized = raw
+        if let idleText = firstMatch(raw, pattern: #"([\d\.]+)% idle"#),
+           let idle = Double(idleText) {
+            return "使用 \(Int(max(0, min(100, 100 - idle)).rounded()))%"
+        }
+        return raw
             .replacingOccurrences(of: " user", with: " 用户")
             .replacingOccurrences(of: " sys", with: " 系统")
             .replacingOccurrences(of: " idle", with: " 空闲")
-        return normalized
+    }
+
+    private static func systemAdvice(cpuSummary: String, memory: String) -> String {
+        if let cpu = firstMatch(cpuSummary, pattern: #"使用 (\d+)%"#).flatMap(Int.init), cpu >= 80 {
+            return "CPU 压力高，先看进程"
+        }
+        if memory.contains("空闲 0.") {
+            return "内存偏紧，少开大应用"
+        }
+        return "系统状态正常"
     }
 
     private static func uptimeSummary() -> String {
         let raw = CommandRunner.shell("uptime | sed 's/^ //; s/  */ /g'")
         guard !raw.isEmpty else { return "就绪" }
-        let pieces = raw.components(separatedBy: ", load averages:")
-        let load = pieces.count > 1 ? pieces[1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
-        let days = firstMatch(raw, pattern: #"up ([^,]+),"#) ?? ""
-        if !days.isEmpty, !load.isEmpty {
-            return "运行 \(days) | 负载 \(load)"
+        let loadPieces = raw.components(separatedBy: "load averages:")
+        if loadPieces.count > 1 {
+            let load = loadPieces[1]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: " ")
+                .prefix(1)
+                .joined(separator: " / ")
+            if !load.isEmpty {
+                return "负载 \(load)"
+            }
         }
-        return raw
+        if let uptime = firstMatch(raw, pattern: #"up ([^,]+),"#), !uptime.isEmpty {
+            return "运行 \(uptime)"
+        }
+        return "就绪"
     }
 
     private static func recentCodexSessions() -> [String] {
         let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/session_index.jsonl")
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            return ["No recent session index found"]
+            return ["暂无 Codex 会话记录"]
         }
         let sessions = content.split(separator: "\n").compactMap { line -> (name: String, updated: String, display: String)? in
             guard let data = String(line).data(using: .utf8),
@@ -682,7 +872,427 @@ struct DashboardData {
             return (name, rawUpdated, display)
         }
         let sorted = sessions.sorted { $0.updated > $1.updated }.prefix(10).map(\.display)
-        return sorted.isEmpty ? ["No recent session index found"] : Array(sorted)
+        return sorted.isEmpty ? ["暂无 Codex 会话记录"] : Array(sorted)
+    }
+
+    private static func codexActivity() -> CodexActivity {
+        let messages = recentCodexMessages(limit: 8)
+        let limitStatus = codexLimitStatus()
+        if let latest = messages.first {
+            let rows = messages.map { message in
+                let time = codexDisplayTime(message.timestamp)
+                let title = clipped(message.text, limit: 30)
+                return time.isEmpty ? title : "\(title) | \(time)"
+            }
+            return CodexActivity(
+                currentTask: clipped(latest.text, limit: 46),
+                limitStatus: limitStatus,
+                recentWork: rows,
+                nextAction: limitStatus.health
+            )
+        }
+
+        let sessions = recentCodexSessions()
+        return CodexActivity(
+            currentTask: sessions.first.map { clipped($0.components(separatedBy: " | ").first ?? $0, limit: 46) } ?? "等待 Codex 任务",
+            limitStatus: limitStatus,
+            recentWork: sessions,
+            nextAction: limitStatus.health
+        )
+    }
+
+    private static func codexLimitStatus() -> CodexLimitStatus {
+        if let live = codexRateLimitFromLogs() {
+            return live
+        }
+        return codexLocalUsageStatus()
+    }
+
+    private static func codexRateLimitFromLogs() -> CodexLimitStatus? {
+        let database = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/logs_2.sqlite")
+        guard FileManager.default.fileExists(atPath: database.path) else { return nil }
+        let sql = """
+        SELECT ts, feedback_log_body
+        FROM logs
+        WHERE (target = 'log' AND feedback_log_body LIKE 'Received message {"type":"codex.rate_limits"%')
+           OR (target = 'codex_api::endpoint::responses_websocket' AND feedback_log_body LIKE '%websocket event: {"type":"codex.rate_limits"%')
+        ORDER BY id DESC
+        LIMIT 10;
+        """
+        guard let output = try? runSQLite(database: database, sql: sql), !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            guard let tab = line.firstIndex(of: "\t") else { continue }
+            let timestamp = Int(line[..<tab]) ?? Int(Date().timeIntervalSince1970)
+            let body = String(line[line.index(after: tab)...])
+            guard let root = codexRateLimitJSON(from: body),
+                  let status = codexLimitStatus(from: root, capturedAt: Date(timeIntervalSince1970: Double(timestamp))) else {
+                continue
+            }
+            return status
+        }
+        return nil
+    }
+
+    private static func codexLimitStatus(from root: [String: Any], capturedAt: Date) -> CodexLimitStatus? {
+        let codexLimit = dictionary(root["rateLimitsByLimitId"]).flatMap { limits in
+            dictionary(limits["codex"])
+        } ?? dictionary(root["rateLimits"])
+        let legacyLimits = dictionary(root["rate_limits"])
+        let primary = dictionary(codexLimit?["primary"]) ?? dictionary(legacyLimits?["primary"])
+        let weekly = dictionary(codexLimit?["secondary"]) ?? dictionary(legacyLimits?["secondary"])
+
+        let primaryRemaining = remainingPercent(primary)
+        let weeklyRemaining = remainingPercent(weekly)
+        guard primaryRemaining != nil || weeklyRemaining != nil else { return nil }
+
+        let primaryReset = resetDate(primary)
+        let weeklyReset = resetDate(weekly)
+        let primaryText = primaryRemaining.map { "\($0)%" } ?? "--"
+        let weeklyText = weeklyRemaining.map { "\($0)%" } ?? "--"
+        let resetText = primaryReset.map(countdownText) ?? weeklyReset.map(countdownText) ?? "--"
+        let health: String
+        if let weeklyRemaining, weeklyRemaining <= 10 {
+            health = "周额度紧张，减少长任务"
+        } else if let primaryRemaining, primaryRemaining <= 15 {
+            health = "5h 额度紧张，等重置"
+        } else {
+            health = "额度正常，可继续"
+        }
+
+        return CodexLimitStatus(
+            primaryLabel: "5h 剩余",
+            primaryValue: primaryText,
+            weeklyValue: weeklyText,
+            resetText: resetText,
+            health: health,
+            rows: [
+                "限额状态 | \(health)",
+                "5h 重置 | \(primaryReset.map(timestampText) ?? "--")",
+                "周重置 | \(weeklyReset.map(timestampText) ?? "--")",
+                "限额快照 | \(timestampText(capturedAt))"
+            ]
+        )
+    }
+
+    private static func codexLocalUsageStatus() -> CodexLimitStatus {
+        let database = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite")
+        guard FileManager.default.fileExists(atPath: database.path) else {
+            return CodexLimitStatus(
+                primaryLabel: "限额",
+                primaryValue: "--",
+                weeklyValue: "--",
+                resetText: "--",
+                health: "未找到本机 Codex 数据",
+                rows: ["Codex 数据 | 未找到 ~/.codex/state_5.sqlite"]
+            )
+        }
+
+        let recentStartMs = Int(Date().addingTimeInterval(-24 * 60 * 60).timeIntervalSince1970) * 1000
+        let sql = """
+        SELECT COUNT(*),
+               COALESCE(SUM(tokens_used), 0),
+               COALESCE(SUM(CASE WHEN updated_at_ms >= \(recentStartMs) THEN tokens_used ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN updated_at_ms >= \(recentStartMs) THEN 1 ELSE 0 END), 0)
+        FROM threads;
+        """
+        let fields = (try? runSQLite(database: database, sql: sql))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "\t", omittingEmptySubsequences: false)
+            .map(String.init) ?? []
+        let threadCount = fields.indices.contains(0) ? (Int(fields[0]) ?? 0) : 0
+        let totalTokens = fields.indices.contains(1) ? (Int(fields[1]) ?? 0) : 0
+        let recentTokens = fields.indices.contains(2) ? (Int(fields[2]) ?? 0) : 0
+        let recentThreads = fields.indices.contains(3) ? (Int(fields[3]) ?? 0) : 0
+
+        return CodexLimitStatus(
+            primaryLabel: "24h Tokens",
+            primaryValue: compactNumber(recentTokens),
+            weeklyValue: "--",
+            resetText: "无快照",
+            health: "未捕获服务端限额",
+            rows: [
+                "限额状态 | 未捕获服务端快照",
+                "24h 活跃线程 | \(recentThreads)",
+                "累计 Tokens | \(compactNumber(totalTokens))",
+                "本机线程 | \(threadCount)"
+            ]
+        )
+    }
+
+    private static func codexRateLimitJSON(from body: String) -> [String: Any]? {
+        if let root = jsonRoot(after: "Received message ", in: body) {
+            return root
+        }
+        if let root = jsonRoot(after: "websocket event: ", in: body) {
+            return root
+        }
+        return nil
+    }
+
+    private static func jsonRoot(after marker: String, in body: String) -> [String: Any]? {
+        guard let markerRange = body.range(of: marker) else { return nil }
+        let remainder = body[markerRange.upperBound...]
+        guard let jsonStart = remainder.firstIndex(of: "{"),
+              let jsonText = balancedJSONObjectText(from: remainder[jsonStart...]),
+              let data = jsonText.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    private static func balancedJSONObjectText(from text: Substring) -> String? {
+        var depth = 0
+        var isInsideString = false
+        var isEscaped = false
+
+        for index in text.indices {
+            let character = text[index]
+            if isInsideString {
+                if isEscaped {
+                    isEscaped = false
+                } else if character == "\\" {
+                    isEscaped = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+                continue
+            }
+
+            if character == "\"" {
+                isInsideString = true
+            } else if character == "{" {
+                depth += 1
+            } else if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return String(text[...index])
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func dictionary(_ value: Any?) -> [String: Any]? {
+        value as? [String: Any]
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
+        return nil
+    }
+
+    private static func remainingPercent(_ object: [String: Any]?) -> Int? {
+        guard let object else { return nil }
+        let used = number(object["usedPercent"]) ?? number(object["used_percent"])
+        guard let used else { return nil }
+        return Int(max(0, min(100, 100 - used)).rounded())
+    }
+
+    private static func resetDate(_ object: [String: Any]?) -> Date? {
+        guard let object else { return nil }
+        let reset = number(object["resetsAt"]) ?? number(object["reset_at"])
+        return reset.map { Date(timeIntervalSince1970: $0) }
+    }
+
+    private static func runSQLite(database: URL, sql: String) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        process.arguments = ["-separator", "\t", database.path, sql]
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+
+        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if process.terminationStatus == 0 {
+            return output
+        }
+        let error = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        throw NSError(domain: "KindleDashboard.SQLite", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: error])
+    }
+
+    private static func compactNumber(_ value: Int) -> String {
+        let number = Double(value)
+        if number >= 1_000_000 {
+            return "\(String(format: "%.1f", number / 1_000_000))M"
+        }
+        if number >= 1_000 {
+            return "\(String(format: "%.1f", number / 1_000))K"
+        }
+        return "\(value)"
+    }
+
+    private static func countdownText(_ date: Date) -> String {
+        let remaining = Int(date.timeIntervalSince(Date()))
+        if remaining <= 0 {
+            return "已重置"
+        }
+        if remaining < 24 * 60 * 60 {
+            let hours = remaining / 3600
+            let minutes = (remaining % 3600) / 60
+            return hours > 0 ? "\(hours)h\(minutes)m" : "\(minutes)m"
+        }
+        return timestampText(date)
+    }
+
+    private static func timestampText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private static func recentCodexMessages(limit: Int) -> [(text: String, timestamp: String)] {
+        var messages: [(text: String, timestamp: String)] = []
+
+        for file in codexSessionFiles().prefix(12) {
+            guard let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            for line in content.split(separator: "\n") {
+                guard let data = String(line).data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      object["type"] as? String == "response_item",
+                      let payload = object["payload"] as? [String: Any],
+                      payload["type"] as? String == "message",
+                      payload["role"] as? String == "user",
+                      let content = payload["content"] as? [[String: Any]] else {
+                    continue
+                }
+
+                let timestamp = object["timestamp"] as? String ?? ""
+                for item in content {
+                    guard item["type"] as? String == "input_text",
+                          let raw = item["text"] as? String,
+                          let clean = cleanedCodexUserText(raw) else {
+                        continue
+                    }
+                    messages.append((clean, timestamp))
+                }
+            }
+        }
+
+        var seen = Set<String>()
+        return Array(messages
+            .sorted { lhs, rhs in
+                if lhs.timestamp == rhs.timestamp { return lhs.text > rhs.text }
+                return lhs.timestamp > rhs.timestamp
+            }
+            .filter { message in
+                if seen.contains(message.text) { return false }
+                seen.insert(message.text)
+                return true
+            }
+            .prefix(limit))
+    }
+
+    private static func codexSessionFiles() -> [URL] {
+        let root = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/sessions")
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        var files: [(url: URL, modified: Date)] = []
+        for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            files.append((url, modified))
+        }
+
+        let sorted = files.sorted { $0.modified > $1.modified }.map(\.url)
+        let indexedIDs = indexedCodexSessionIDs()
+        guard !indexedIDs.isEmpty else { return sorted }
+
+        let indexedFiles = sorted.filter { url in
+            guard let id = codexSessionID(from: url) else { return false }
+            return indexedIDs.contains(id)
+        }
+        return indexedFiles.isEmpty ? sorted : indexedFiles
+    }
+
+    private static func indexedCodexSessionIDs() -> Set<String> {
+        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/session_index.jsonl")
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let ids = content.split(separator: "\n").compactMap { line -> String? in
+            guard let data = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            return object["id"] as? String
+        }
+        return Set(ids)
+    }
+
+    private static func codexSessionID(from url: URL) -> String? {
+        let name = url.deletingPathExtension().lastPathComponent
+        let pattern = #"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"#
+        return firstMatch(name, pattern: pattern)
+    }
+
+    private static func cleanedCodexUserText(_ raw: String) -> String? {
+        let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedRaw.range(of: #"^\[\d+\]\s+(assistant|tool|developer|system)\b"#, options: .regularExpression) != nil {
+            return nil
+        }
+        let internalPrefixes = [
+            "The following is the Codex agent history",
+            "The Codex agent has requested",
+            "Reviewed Codex session id:",
+            "We need continue from summary",
+            "Need continue from summary",
+            "Planned action JSON:",
+            "Assess the exact planned action",
+            ">>> TRANSCRIPT",
+            "<<< TRANSCRIPT",
+            "Command completed:",
+            "Command failed:"
+        ]
+        if internalPrefixes.contains(where: { trimmedRaw.hasPrefix($0) }) {
+            return nil
+        }
+        if raw.contains("<environment_context>")
+            || raw.contains("permissions instructions")
+            || raw.contains("<app-context>")
+            || raw.contains("<skills_instructions>") {
+            return nil
+        }
+        if raw.contains("<image name=") || raw.contains("Files mentioned by the user") {
+            return nil
+        }
+
+        let clean = raw
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                return !trimmed.hasPrefix("# Files mentioned")
+                    && !trimmed.hasPrefix("## ")
+                    && !trimmed.hasPrefix("<image")
+                    && !trimmed.hasPrefix("</image")
+            }
+            .joined(separator: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard clean.count >= 2, clean.count <= 600 else { return nil }
+        return clean
+    }
+
+    private static func codexDisplayTime(_ timestamp: String) -> String {
+        guard !timestamp.isEmpty else { return "" }
+        return String(timestamp.prefix(16).replacingOccurrences(of: "T", with: " "))
+    }
+
+    private static func clipped(_ text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+        return String(text.prefix(max(0, limit - 1))) + "…"
     }
 
     private static func kindleDockBuildStatus() -> String {
@@ -751,7 +1361,7 @@ struct DashboardData {
             let command = parts.dropFirst(2).joined(separator: " ")
             return "\(command) | CPU \(cpu)% / MEM \(memory)%"
         }
-        return rows.isEmpty ? ["No process pressure | OK"] : rows
+        return rows.isEmpty ? ["暂无高压进程 | 正常"] : rows
     }
 
     private static func firstMatch(_ input: String, pattern: String) -> String? {
@@ -901,6 +1511,9 @@ struct SVGRenderer {
         let size = KindleOrientation.portrait.frameSize
         let w = size.width
         let h = size.height
+        if model.mode == .home {
+            return homeSVG(width: w, height: h)
+        }
         let margin = 24
         let mainBottom = 1212
         let widgetTop = 1228
@@ -919,6 +1532,26 @@ struct SVGRenderer {
         body += widgetRail(x: margin, y: widgetTop, width: w - margin * 2, height: widgetHeight)
         body += line(x1: margin, y1: footerY - 36, x2: w - margin, y2: footerY - 36, stroke: 3)
         body += text("竖屏信息牌 | Mac 顶栏控制 | \(DashboardData.timestamp())", x: margin, y: footerY, size: 21, weight: "400", family: "Menlo, Monaco, monospace")
+        body += rightText(model.footerRight, rightX: w - margin, y: footerY, size: 21, weight: "400", family: "Menlo, Monaco, monospace")
+
+        return """
+        <svg xmlns="http://www.w3.org/2000/svg" width="\(w)" height="\(h)" viewBox="0 0 \(w) \(h)">
+          <rect x="0" y="0" width="\(w)" height="\(h)" fill="#fff"/>
+          \(body)
+        </svg>
+        """
+    }
+
+    private func homeSVG(width w: Int, height h: Int) -> String {
+        let margin = 68
+        let widgetTop = 1248
+        let widgetHeight = 160
+        let footerY = 1430
+        var body = ""
+        body += pageContent(x: margin, y: 42, width: w - margin * 2, bottom: 1190)
+        body += widgetRail(x: margin, y: widgetTop, width: w - margin * 2, height: widgetHeight)
+        body += line(x1: margin, y1: footerY - 34, x2: w - margin, y2: footerY - 34, stroke: 2)
+        body += text("Kindle Dashboard · \(DashboardData.timestamp())", x: margin, y: footerY, size: 21, weight: "400", family: "Menlo, Monaco, monospace")
         body += rightText(model.footerRight, rightX: w - margin, y: footerY, size: 21, weight: "400", family: "Menlo, Monaco, monospace")
 
         return """
@@ -959,9 +1592,9 @@ struct SVGRenderer {
         case .document: return "文档内容"
         case .image: return "投射内容"
         case .music: return "控制"
-        case .weather: return "传感计划"
+        case .weather: return "未来几小时"
         case .calendar, .home: return "今日"
-        case .focus: return "专注计划"
+        case .focus: return "专注规则"
         case .system: return "资源压力"
         case .screensaver: return "空闲状态"
         }
@@ -1016,22 +1649,22 @@ struct SVGRenderer {
 
     private func homeContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("今天", x: x, y: y + 112, size: 142, weight: "700")
-        body += text(model.subhead, x: x + 4, y: y + 170, size: 36, weight: "400")
-        body += modeArt(cx: x + width - 82, cy: y + 86)
+        body += text("今天", x: x, y: y + 128, size: 154, weight: "700")
+        body += text(model.subhead, x: x + 6, y: y + 194, size: 36, weight: "400")
+        body += modeArt(cx: x + width - 78, cy: y + 108)
 
         if let primary = model.metrics.first {
-            body += text(primary.label, x: x, y: y + 282, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
-            body += wrapped(primary.value, x: x, y: y + 348, width: width - 18, size: 58, maxLines: 2)
+            body += text(primary.label, x: x, y: y + 302, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
+            body += wrapped(primary.value, x: x, y: y + 368, width: width - 24, size: 54, maxLines: 2)
         }
 
-        let adviceTop = y + 492
-        body += rect(x: x, y: adviceTop, width: width, height: 138, stroke: 0, fill: "#000")
-        body += text("现在该看什么", x: x + 30, y: adviceTop + 46, size: 26, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += text(homeAdvice, x: x + 30, y: adviceTop + 104, size: 44, weight: "700", fill: "#fff")
+        let adviceTop = y + 524
+        body += rect(x: x, y: adviceTop, width: width, height: 132, stroke: 0, fill: "#111")
+        body += text("接下来看什么", x: x + 30, y: adviceTop + 46, size: 25, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
+        body += text(homeAdvice, x: x + 30, y: adviceTop + 102, size: 42, weight: "700", fill: "#fff")
 
-        body += metricStrip(x: x, y: y + 684, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)))
-        body += workList(x: x, y: y + 874, width: width, bottom: bottom, title: "今日", rows: model.notes)
+        body += metricStrip(x: x, y: y + 720, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)))
+        body += workList(x: x, y: y + 938, width: width, bottom: bottom, title: "今日", rows: model.notes)
         return body
     }
 
@@ -1043,11 +1676,11 @@ struct SVGRenderer {
 
         let heroTop = y + 214
         body += rect(x: x, y: heroTop, width: width, height: 216, stroke: 0, fill: "#000")
-        body += text("当前目标", x: x + 30, y: heroTop + 50, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(model.metrics.first?.value ?? "Kindle 副屏", x: x + 30, y: heroTop + 134, width: width - 60, size: 66, maxLines: 1, fill: "#fff")
+        body += text(model.metrics.first?.label ?? "当前任务", x: x + 30, y: heroTop + 50, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
+        body += wrapped(model.metrics.first?.value ?? "等待 Codex 任务", x: x + 30, y: heroTop + 120, width: width - 60, size: 54, maxLines: 2, fill: "#fff")
 
-        body += metricStrip(x: x, y: y + 478, width: width, metrics: Array(model.metrics.dropFirst().prefix(2)))
-        body += workList(x: x, y: y + 690, width: width, bottom: bottom, title: "最近工作", rows: model.notes)
+        body += metricStrip(x: x, y: y + 478, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)))
+        body += workList(x: x, y: y + 690, width: width, bottom: bottom, title: "限额与最近任务", rows: model.notes)
         return body
     }
 
@@ -1101,11 +1734,11 @@ struct SVGRenderer {
         let nowPlaying = model.metrics.first?.value ?? "音乐未运行"
         body += rect(x: x, y: y + 232, width: width, height: 202, stroke: 0, fill: "#000")
         body += text("正在播放", x: x + 30, y: y + 284, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(nowPlaying, x: x + 30, y: y + 364, width: width - 60, size: 66, maxLines: 1, fill: "#fff")
+        body += wrapped(nowPlaying, x: x + 30, y: y + 350, width: width - 60, size: 54, maxLines: 2, fill: "#fff")
 
         body += musicButtonRow(x: x, y: y + 482, width: width)
         body += metricStrip(x: x, y: y + 664, width: width, metrics: Array(model.metrics.dropFirst().prefix(2)))
-        body += workList(x: x, y: y + 882, width: width, bottom: bottom, title: "控制说明", rows: model.notes)
+        body += workList(x: x, y: y + 882, width: width, bottom: bottom, title: "控制与状态", rows: model.notes)
         return body
     }
 
@@ -1118,10 +1751,10 @@ struct SVGRenderer {
         let heroTop = y + 236
         body += rect(x: x, y: heroTop, width: width, height: 210, stroke: 0, fill: "#000")
         body += text("出门前判断", x: x + 30, y: heroTop + 52, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(weatherAdvice, x: x + 30, y: heroTop + 136, width: width - 60, size: 64, maxLines: 1, fill: "#fff")
+        body += wrapped(weatherAdvice, x: x + 30, y: heroTop + 126, width: width - 60, size: 54, maxLines: 2, fill: "#fff")
 
         body += metricStrip(x: x, y: y + 500, width: width, metrics: model.metrics)
-        body += workList(x: x, y: y + 720, width: width, bottom: bottom, title: "接入计划", rows: model.notes)
+        body += workList(x: x, y: y + 720, width: width, bottom: bottom, title: "未来几小时", rows: model.notes)
         return body
     }
 
@@ -1131,14 +1764,14 @@ struct SVGRenderer {
         body += text(model.subhead, x: x + 4, y: y + 164, size: 34, weight: "400")
         body += modeArt(cx: x + width - 82, cy: y + 82)
 
-        let next = model.metrics.first?.value ?? "暂未接入日历"
+        let next = model.metrics.first?.value ?? "暂无日程"
         let heroTop = y + 236
         body += rect(x: x, y: heroTop, width: width, height: 210, stroke: 0, fill: "#000")
         body += text("下一项", x: x + 30, y: heroTop + 52, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
         body += wrapped(next, x: x + 30, y: heroTop + 136, width: width - 60, size: 60, maxLines: 1, fill: "#fff")
 
         body += metricStrip(x: x, y: y + 500, width: width, metrics: Array(model.metrics.dropFirst().prefix(2)))
-        body += workList(x: x, y: y + 720, width: width, bottom: bottom, title: "提醒事项", rows: model.notes)
+        body += workList(x: x, y: y + 720, width: width, bottom: bottom, title: "今日提醒", rows: model.notes)
         return body
     }
 
@@ -1150,11 +1783,11 @@ struct SVGRenderer {
 
         let heroTop = y + 236
         body += rect(x: x, y: heroTop, width: width, height: 230, stroke: 0, fill: "#000")
-        body += text("当前时间块", x: x + 30, y: heroTop + 56, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += text(model.metrics.first?.value ?? "50 分钟", x: x + 30, y: heroTop + 164, size: 92, weight: "700", fill: "#fff")
+        body += text("当前任务", x: x + 30, y: heroTop + 56, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
+        body += wrapped(model.metrics.first?.value ?? "等待任务", x: x + 30, y: heroTop + 132, width: width - 60, size: 54, maxLines: 2, fill: "#fff")
 
         body += metricStrip(x: x, y: y + 520, width: width, metrics: Array(model.metrics.dropFirst().prefix(2)))
-        body += workList(x: x, y: y + 740, width: width, bottom: bottom, title: "专注计划", rows: model.notes)
+        body += workList(x: x, y: y + 740, width: width, bottom: bottom, title: "专注规则", rows: model.notes)
         return body
     }
 
@@ -1169,7 +1802,7 @@ struct SVGRenderer {
         body += text("资源压力", x: x + 30, y: heroTop + 52, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
         body += wrapped(model.metrics.first?.value ?? "不可用", x: x + 30, y: heroTop + 122, width: width - 60, size: 48, maxLines: 2, fill: "#fff")
 
-        body += metricStrip(x: x, y: y + 500, width: width, metrics: Array(model.metrics.dropFirst().prefix(2)))
+        body += metricStrip(x: x, y: y + 500, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)))
         body += workList(x: x, y: y + 720, width: width, bottom: bottom, title: "高占用进程", rows: model.notes)
         return body
     }
@@ -1186,13 +1819,21 @@ struct SVGRenderer {
     }
 
     private var homeAdvice: String {
-        if let weather = model.metrics.first?.value, weather.contains("湿度") {
+        let values = model.metrics.map(\.value).joined(separator: " ")
+        if values.contains("无日程") || values.contains("暂无日程") {
+            return "先看天气，再推进项目"
+        }
+        if values.contains("湿度") {
             return "先看天气，再看日程"
         }
         return "看一眼就知道今天怎么安排"
     }
 
     private var weatherAdvice: String {
+        if let advice = model.metrics.first(where: { $0.label == "建议" })?.value,
+           !advice.isEmpty {
+            return advice
+        }
         let value = model.metrics.map(\.value).joined(separator: " ")
         if value.contains("湿度") {
             return "湿度偏高，少开窗"
@@ -1376,6 +2017,7 @@ struct SVGRenderer {
 
     private var activeWidgetTitle: String {
         switch model.mode {
+        case .home: return "时间"
         case .weather: return "天气"
         case .music: return "音乐"
         case .calendar: return "日历"
@@ -1394,7 +2036,7 @@ struct SVGRenderer {
     }
 
     private func shortWeather() -> String {
-        if let currentWeather = model.metrics.first(where: { $0.label == "天气" || $0.label == "室外" })?.value,
+        if let currentWeather = model.metrics.first(where: { $0.label == "天气" || $0.label == "室外" || $0.label == "现在" })?.value,
            let temp = firstTemperature(in: currentWeather) {
             return temp
         }
@@ -1691,7 +2333,7 @@ final class DashboardServer: @unchecked Sendable {
 
     private func controlJSON(_ snapshot: AppSnapshot) -> String {
         """
-        {"refreshSerial":\(snapshot.refreshSerial),"refreshInterval":\(snapshot.kindleRefreshInterval),"frontlightEnabled":\(snapshot.frontlightEnabled ? "true" : "false"),"frontlightLevel":\(snapshot.frontlightLevel),"batteryProtectionEnabled":\(snapshot.batteryProtectionEnabled ? "true" : "false"),"batteryLowerLimit":\(snapshot.batteryLowerLimit),"batteryUpperLimit":\(snapshot.batteryUpperLimit)}
+        {"refreshSerial":\(snapshot.refreshSerial),"refreshInterval":\(snapshot.lightRefreshInterval),"lightRefreshInterval":\(snapshot.lightRefreshInterval),"fullRefreshInterval":\(snapshot.fullRefreshInterval),"frontlightEnabled":\(snapshot.frontlightEnabled ? "true" : "false"),"frontlightLevel":\(snapshot.frontlightLevel),"batteryProtectionEnabled":\(snapshot.batteryProtectionEnabled ? "true" : "false"),"batteryLowerLimit":\(snapshot.batteryLowerLimit),"batteryUpperLimit":\(snapshot.batteryUpperLimit)}
         """
     }
 
@@ -1783,6 +2425,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var server: DashboardServer!
     private var settingsMenuItem: NSMenuItem?
+    private var modeMenuItems: [NSMenuItem] = []
+    private var portraitMenuItem: NSMenuItem?
+    private var landscapeMenuItem: NSMenuItem?
+    private var lightRefreshMenuItems: [NSMenuItem] = []
+    private var fullRefreshMenuItems: [NSMenuItem] = []
     private var cycleMenuItems: [NSMenuItem] = []
     private var frontlightMenuItems: [NSMenuItem] = []
     private var batteryProtectionMenuItems: [NSMenuItem] = []
@@ -1800,6 +2447,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupMenu() {
         settingsMenuItem = nil
+        modeMenuItems.removeAll()
+        portraitMenuItem = nil
+        landscapeMenuItem = nil
+        lightRefreshMenuItems.removeAll()
+        fullRefreshMenuItems.removeAll()
         cycleMenuItems.removeAll()
         frontlightMenuItems.removeAll()
         batteryProtectionMenuItems.removeAll()
@@ -1811,72 +2463,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
+        menu.addItem(infoMenuItem("Kindle Dashboard"))
+        menu.addItem(infoMenuItem("已连接 · 本机服务"))
+        menu.addItem(.separator())
         for mode in KindleMode.allCases {
-            let item = NSMenuItem(title: mode.menuTitle, action: #selector(selectMode(_:)), keyEquivalent: "")
+            let item = menuItem(mode.menuTitle, #selector(selectMode(_:)), symbol: mode.menuSymbolName)
             item.representedObject = mode.rawValue
-            item.target = self
+            modeMenuItems.append(item)
             menu.addItem(item)
         }
 
         menu.addItem(.separator())
-        menu.addItem(menuItem("打开 Markdown 文档...", #selector(openMarkdownDocument)))
-        menu.addItem(menuItem("文档上一页", #selector(previousDocumentPage)))
-        menu.addItem(menuItem("文档下一页", #selector(nextDocumentPage)))
+        menu.addItem(menuItem("打开 Markdown 文档...", #selector(openMarkdownDocument), symbol: "doc.text"))
+        menu.addItem(menuItem("文档上一页", #selector(previousDocumentPage), symbol: "chevron.left"))
+        menu.addItem(menuItem("文档下一页", #selector(nextDocumentPage), symbol: "chevron.right"))
         menu.addItem(.separator())
-        menu.addItem(menuItem("投射图片...", #selector(openProjectionImage)))
-        menu.addItem(menuItem("投射当前截屏", #selector(projectScreenshot)))
+        menu.addItem(menuItem("投射图片...", #selector(openProjectionImage), symbol: "photo"))
+        menu.addItem(menuItem("投射当前截屏", #selector(projectScreenshot), symbol: "camera.viewfinder"))
 
         menu.addItem(.separator())
-        menu.addItem(menuItem("立即刷新 Kindle", #selector(refreshKindleNow)))
+        menu.addItem(menuItem("立即刷新 Kindle", #selector(refreshKindleNow), symbol: "arrow.clockwise"))
 
         menu.addItem(.separator())
-        menu.addItem(menuItem("播放 / 暂停音乐", #selector(playPause)))
-        menu.addItem(menuItem("下一首", #selector(nextTrack)))
-        menu.addItem(menuItem("上一首", #selector(previousTrack)))
+        menu.addItem(menuItem("播放 / 暂停音乐", #selector(playPause), symbol: "playpause"))
+        menu.addItem(menuItem("下一首", #selector(nextTrack), symbol: "forward.end"))
+        menu.addItem(menuItem("上一首", #selector(previousTrack), symbol: "backward.end"))
 
         menu.addItem(.separator())
         let settings = NSMenuItem(title: "设置", action: nil, keyEquivalent: "")
+        settings.image = symbolImage("gearshape")
         settingsMenuItem = settings
         let settingsMenu = NSMenu()
-        settingsMenu.addItem(statefulMenuItem("Kindle 背光：已关闭", #selector(toggleFrontlight), storeIn: &frontlightMenuItems))
-        settingsMenu.addItem(statefulMenuItem("电池保护：已关闭（45%-55%）", #selector(toggleBatteryProtection), storeIn: &batteryProtectionMenuItems))
-        let settingsCycle = NSMenuItem(title: "自动轮换：已关闭", action: #selector(toggleCycle), keyEquivalent: "")
-        settingsCycle.target = self
+        settingsMenu.addItem(statefulMenuItem("Kindle 背光", #selector(toggleFrontlight), symbol: "sun.max", storeIn: &frontlightMenuItems))
+        settingsMenu.addItem(statefulMenuItem("电池保护", #selector(toggleBatteryProtection), symbol: "battery.100", storeIn: &batteryProtectionMenuItems))
+        let settingsCycle = menuItem("自动轮换", #selector(toggleCycle), symbol: "arrow.triangle.2.circlepath")
         cycleMenuItems.append(settingsCycle)
         settingsMenu.addItem(settingsCycle)
         settingsMenu.addItem(.separator())
-        let portrait = NSMenuItem(title: "竖屏布局", action: #selector(selectPortrait), keyEquivalent: "")
-        portrait.target = self
+        let portrait = menuItem("竖屏布局", #selector(selectPortrait), symbol: "rectangle.portrait")
+        portraitMenuItem = portrait
         settingsMenu.addItem(portrait)
-        let landscape = NSMenuItem(title: "横屏布局（保留）", action: #selector(selectLandscape), keyEquivalent: "")
-        landscape.target = self
+        let landscape = menuItem("横屏布局", #selector(selectLandscape), symbol: "rectangle")
+        landscapeMenuItem = landscape
         settingsMenu.addItem(landscape)
         settingsMenu.addItem(.separator())
         let settingsRefreshRate = NSMenuItem(title: "刷新策略", action: nil, keyEquivalent: "")
+        settingsRefreshRate.image = symbolImage("timer")
         let settingsRefreshRateMenu = NSMenu()
-        settingsRefreshRateMenu.addItem(infoMenuItem("轻刷新：每 1 分钟"))
-        settingsRefreshRateMenu.addItem(infoMenuItem("全刷新：每 5 分钟"))
+        let lightRefresh = NSMenuItem(title: "轻刷新", action: nil, keyEquivalent: "")
+        lightRefresh.image = symbolImage("arrow.clockwise")
+        let lightRefreshMenu = NSMenu()
+        addRefreshRateItem("10 秒", seconds: 10, action: #selector(selectLightRefreshRate(_:)), to: lightRefreshMenu, storeIn: &lightRefreshMenuItems)
+        addRefreshRateItem("30 秒", seconds: 30, action: #selector(selectLightRefreshRate(_:)), to: lightRefreshMenu, storeIn: &lightRefreshMenuItems)
+        addRefreshRateItem("1 分钟", seconds: 60, action: #selector(selectLightRefreshRate(_:)), to: lightRefreshMenu, storeIn: &lightRefreshMenuItems)
+        addRefreshRateItem("3 分钟", seconds: 180, action: #selector(selectLightRefreshRate(_:)), to: lightRefreshMenu, storeIn: &lightRefreshMenuItems)
+        addRefreshRateItem("5 分钟", seconds: 300, action: #selector(selectLightRefreshRate(_:)), to: lightRefreshMenu, storeIn: &lightRefreshMenuItems)
+        lightRefresh.submenu = lightRefreshMenu
+        settingsRefreshRateMenu.addItem(lightRefresh)
+
+        let fullRefresh = NSMenuItem(title: "完全刷新", action: nil, keyEquivalent: "")
+        fullRefresh.image = symbolImage("arrow.triangle.2.circlepath")
+        let fullRefreshMenu = NSMenu()
+        addRefreshRateItem("2 分钟", seconds: 120, action: #selector(selectFullRefreshRate(_:)), to: fullRefreshMenu, storeIn: &fullRefreshMenuItems)
+        addRefreshRateItem("5 分钟", seconds: 300, action: #selector(selectFullRefreshRate(_:)), to: fullRefreshMenu, storeIn: &fullRefreshMenuItems)
+        addRefreshRateItem("10 分钟", seconds: 600, action: #selector(selectFullRefreshRate(_:)), to: fullRefreshMenu, storeIn: &fullRefreshMenuItems)
+        addRefreshRateItem("15 分钟", seconds: 900, action: #selector(selectFullRefreshRate(_:)), to: fullRefreshMenu, storeIn: &fullRefreshMenuItems)
+        addRefreshRateItem("30 分钟", seconds: 1800, action: #selector(selectFullRefreshRate(_:)), to: fullRefreshMenu, storeIn: &fullRefreshMenuItems)
+        fullRefresh.submenu = fullRefreshMenu
+        settingsRefreshRateMenu.addItem(fullRefresh)
         settingsRefreshRateMenu.addItem(infoMenuItem("页面切换：立即轻刷新"))
         settingsRefreshRate.submenu = settingsRefreshRateMenu
         settingsMenu.addItem(settingsRefreshRate)
         settingsMenu.addItem(.separator())
-        settingsMenu.addItem(menuItem("复制控制页地址", #selector(copyURL)))
-        settingsMenu.addItem(menuItem("复制真全屏地址", #selector(copyFrameURL)))
+        settingsMenu.addItem(menuItem("复制控制页地址", #selector(copyURL), symbol: "link"))
+        settingsMenu.addItem(menuItem("复制真全屏地址", #selector(copyFrameURL), symbol: "rectangle.on.rectangle"))
         settings.submenu = settingsMenu
         menu.addItem(settings)
-        menu.addItem(menuItem("退出", #selector(quit)))
+        menu.addItem(menuItem("退出 Kindle Dashboard", #selector(quit), symbol: "power"))
         statusItem.menu = menu
         updateControlMenuState()
     }
 
-    private func menuItem(_ title: String, _ action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    private func menuItem(_ title: String, _ action: Selector, symbol: String? = nil) -> NSMenuItem {
+        let item = NSMenuItem(title: menuTitle(title), action: action, keyEquivalent: "")
         item.target = self
+        if let symbol {
+            item.image = symbolImage(symbol)
+        }
         return item
     }
 
-    private func statefulMenuItem(_ title: String, _ action: Selector, storeIn storage: inout [NSMenuItem]) -> NSMenuItem {
-        let item = menuItem(title, action)
+    private func statefulMenuItem(_ title: String, _ action: Selector, symbol: String, storeIn storage: inout [NSMenuItem]) -> NSMenuItem {
+        let item = menuItem(title, action, symbol: symbol)
         storage.append(item)
         return item
     }
@@ -1887,10 +2565,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
-    private func addRefreshRateItem(_ title: String, seconds: Int, to menu: NSMenu) {
-        let item = NSMenuItem(title: title, action: #selector(selectRefreshRate(_:)), keyEquivalent: "")
+    private func symbolImage(_ name: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
+        image?.isTemplate = true
+        image?.size = NSSize(width: 18, height: 18)
+        return image
+    }
+
+    private func menuTitle(_ title: String, status: String = "") -> String {
+        guard !status.isEmpty else { return title }
+        let targetWidth = 18
+        let padding = max(2, targetWidth - displayWidth(title))
+        return title + String(repeating: " ", count: padding) + status
+    }
+
+    private func displayWidth(_ value: String) -> Int {
+        value.unicodeScalars.reduce(0) { result, scalar in
+            let code = Int(scalar.value)
+            let isWide = (0x4E00...0x9FFF).contains(code) ||
+                (0x3000...0x303F).contains(code) ||
+                (0xFF00...0xFFEF).contains(code)
+            return result + (isWide ? 2 : 1)
+        }
+    }
+
+    private func addRefreshRateItem(_ title: String, seconds: Int, action: Selector, to menu: NSMenu, storeIn storage: inout [NSMenuItem]) {
+        let item = NSMenuItem(title: menuTitle(title), action: action, keyEquivalent: "")
         item.representedObject = seconds
         item.target = self
+        storage.append(item)
         menu.addItem(item)
     }
 
@@ -1936,11 +2639,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateTitle()
     }
 
-    @objc private func selectRefreshRate(_ sender: NSMenuItem) {
+    @objc private func selectLightRefreshRate(_ sender: NSMenuItem) {
         guard let seconds = sender.representedObject as? Int else {
             return
         }
-        state.setKindleRefreshInterval(seconds)
+        state.setLightRefreshInterval(seconds)
+        updateTitle()
+    }
+
+    @objc private func selectFullRefreshRate(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? Int else {
+            return
+        }
+        state.setFullRefreshInterval(seconds)
         updateTitle()
     }
 
@@ -2046,34 +2757,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateControlMenuState(_ existingSnapshot: AppSnapshot? = nil) {
         let snapshot = existingSnapshot ?? state.snapshot()
-        let frontlightSummary = snapshot.frontlightEnabled ? "背光开" : "背光关"
-        let batterySummary = snapshot.batteryProtectionEnabled ? "电池保护开" : "电池保护关"
-        settingsMenuItem?.title = "设置（\(frontlightSummary) · \(batterySummary)）"
+        settingsMenuItem?.title = menuTitle("设置", status: snapshot.cycleEnabled ? "轮换开" : "轮换关")
+
+        for item in modeMenuItems {
+            guard let raw = item.representedObject as? String,
+                  let mode = KindleMode(rawValue: raw) else {
+                continue
+            }
+            item.title = menuTitle(mode.menuTitle, status: mode == snapshot.mode ? "当前" : "")
+            item.state = mode == snapshot.mode ? .on : .off
+        }
+
+        portraitMenuItem?.title = menuTitle("竖屏布局", status: snapshot.orientation == .portrait ? "生效" : "")
+        portraitMenuItem?.state = snapshot.orientation == .portrait ? .on : .off
+        landscapeMenuItem?.title = menuTitle("横屏布局", status: snapshot.orientation == .landscapeClockwise ? "生效" : "保留")
+        landscapeMenuItem?.state = snapshot.orientation == .landscapeClockwise ? .on : .off
+
+        for item in lightRefreshMenuItems {
+            guard let seconds = item.representedObject as? Int else { continue }
+            item.title = menuTitle(refreshLabel(seconds), status: seconds == snapshot.lightRefreshInterval ? "当前" : "")
+            item.state = seconds == snapshot.lightRefreshInterval ? .on : .off
+        }
+
+        for item in fullRefreshMenuItems {
+            guard let seconds = item.representedObject as? Int else { continue }
+            item.title = menuTitle(refreshLabel(seconds), status: seconds == snapshot.fullRefreshInterval ? "当前" : "")
+            item.state = seconds == snapshot.fullRefreshInterval ? .on : .off
+        }
 
         for item in cycleMenuItems {
-            item.title = snapshot.cycleEnabled ? "自动轮换：已开启" : "自动轮换：已关闭"
+            item.title = menuTitle("自动轮换", status: snapshot.cycleEnabled ? "开" : "关")
             item.state = snapshot.cycleEnabled ? .on : .off
         }
 
         for item in frontlightMenuItems {
             if snapshot.frontlightEnabled {
-                item.title = "Kindle 背光：已开启（\(snapshot.frontlightLevel)）"
+                item.title = menuTitle("Kindle 背光", status: "开 \(snapshot.frontlightLevel)")
                 item.state = .on
             } else {
-                item.title = "Kindle 背光：已关闭"
+                item.title = menuTitle("Kindle 背光", status: "关")
                 item.state = .off
             }
         }
 
         for item in batteryProtectionMenuItems {
             if snapshot.batteryProtectionEnabled {
-                item.title = "电池保护：已开启（\(snapshot.batteryLowerLimit)%-\(snapshot.batteryUpperLimit)%）"
+                item.title = menuTitle("电池保护", status: "开 \(snapshot.batteryLowerLimit)-\(snapshot.batteryUpperLimit)%")
                 item.state = .on
             } else {
-                item.title = "电池保护：已关闭（\(snapshot.batteryLowerLimit)%-\(snapshot.batteryUpperLimit)%）"
+                item.title = menuTitle("电池保护", status: "关")
                 item.state = .off
             }
         }
+    }
+
+    private func refreshLabel(_ seconds: Int) -> String {
+        if seconds < 60 {
+            return "\(seconds) 秒"
+        }
+        return "\(seconds / 60) 分钟"
     }
 
     private func projectImageFile(_ url: URL, title overrideTitle: String? = nil) {
@@ -2172,6 +2914,31 @@ private func escape(_ value: String) -> String {
         .replacingOccurrences(of: "<", with: "&lt;")
         .replacingOccurrences(of: ">", with: "&gt;")
         .replacingOccurrences(of: "\"", with: "&quot;")
+}
+
+if CommandLine.arguments.contains("--dump-home-svg") {
+    let state = AppState()
+    let model = DashboardData.make(snapshot: state.snapshot())
+    print(SVGRenderer(model: model).svg())
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--dump-codex-svg") {
+    let state = AppState()
+    state.setMode(.codex)
+    let model = DashboardData.make(snapshot: state.snapshot())
+    print(SVGRenderer(model: model).svg())
+    exit(0)
+}
+
+if let dumpIndex = CommandLine.arguments.firstIndex(of: "--dump-mode"),
+   CommandLine.arguments.indices.contains(dumpIndex + 1),
+   let mode = KindleMode(rawValue: CommandLine.arguments[dumpIndex + 1]) {
+    let state = AppState()
+    state.setMode(mode)
+    let model = DashboardData.make(snapshot: state.snapshot())
+    print(SVGRenderer(model: model).svg())
+    exit(0)
 }
 
 let app = NSApplication.shared

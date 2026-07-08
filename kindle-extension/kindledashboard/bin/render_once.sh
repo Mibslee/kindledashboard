@@ -89,11 +89,13 @@ if [ -x "$FBINK" ]; then
       eips 2 2 "KindleDashboard render failed"
       exit 2
     }
-    sleep 2
-    "$FBINK" -c -f -a -g "file=$OUT" >> "$LOG" 2>&1 || {
-      echo "fbink full second pass failed" >> "$LOG"
-      exit 2
-    }
+    if [ "$RENDER_MODE" = "deep" ]; then
+      sleep 2
+      "$FBINK" -c -f -a -g "file=$OUT" >> "$LOG" 2>&1 || {
+        echo "fbink deep second pass failed" >> "$LOG"
+        exit 2
+      }
+    fi
   fi
 else
   echo "fbink missing: $FBINK" >> "$LOG"

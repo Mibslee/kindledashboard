@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.2.2
+
+### Added
+
+- Added richer weather cards with current conditions, the next few hourly forecast rows, precipitation probability, and short action advice.
+- Added Codex workboard status using the current task, local rate-limit snapshots, reset times, and fallback aggregate usage when service-side quota data is not available.
+- Added configurable light/full refresh intervals in the Mac menu and passed those settings to the Kindle extension.
+- Added `--dump-mode <mode>` for exporting any dashboard page as SVG during QA.
+
+### Changed
+
+- Reworked all main dashboard pages around clearer “what should I know / what should I do next” information hierarchy.
+- Improved home, document, image, music, calendar, focus, and system pages with more useful labels, larger primary information, and fewer placeholder-style rows.
+- Changed page switching on Kindle to trigger a light refresh instead of forcing repeated full refreshes.
+- Kept full refreshes on a separate cadence so long-running desk use has less flashing while still cleaning ghosting periodically.
+
+### Fixed
+
+- Fixed stale placeholder copy such as “用途”, “后续接入”, and English fallback rows in public-facing screens.
+- Fixed calendar empty-state advice so “暂无日程” no longer suggests preparing for a nonexistent event.
+- Fixed long music titles and Mac status strings competing with the primary content area.
+
 ## v0.2.1
 
 ### Added

@@ -85,10 +85,22 @@ fi
       serial="$(sed -n 's/.*"refreshSerial":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
       frontlight="$(sed -n 's/.*"frontlightEnabled":\(true\|false\).*/\1/p' "$CONTROL_FILE")"
       level="$(sed -n 's/.*"frontlightLevel":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
+      light_interval="$(sed -n 's/.*"lightRefreshInterval":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
+      full_interval="$(sed -n 's/.*"fullRefreshInterval":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
       battery_protection="$(sed -n 's/.*"batteryProtectionEnabled":\(true\|false\).*/\1/p' "$CONTROL_FILE")"
       battery_lower="$(sed -n 's/.*"batteryLowerLimit":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
       battery_upper="$(sed -n 's/.*"batteryUpperLimit":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
       [ -z "$level" ] && level=10
+      case "$light_interval" in
+        ''|*[!0-9]*) light_interval="$LIGHT_RENDER_INTERVAL" ;;
+      esac
+      case "$full_interval" in
+        ''|*[!0-9]*) full_interval="$FULL_RENDER_INTERVAL" ;;
+      esac
+      [ "$light_interval" -lt 10 ] && light_interval=10
+      [ "$full_interval" -lt 120 ] && full_interval=120
+      LIGHT_RENDER_INTERVAL="$light_interval"
+      FULL_RENDER_INTERVAL="$full_interval"
 
       if [ "$frontlight" = "true" ]; then
         lipc-set-prop com.lab126.powerd flIntensity "$level" 2>/dev/null || true
@@ -104,12 +116,27 @@ fi
 
     full_elapsed=$((now - last_full_render))
     light_elapsed=$((now - last_light_render))
-    if [ "$last_full_render" -eq 0 ] || [ "$full_elapsed" -ge "$FULL_RENDER_INTERVAL" ]; then
+    serial_changed=0
+    if [ -n "$serial" ] && [ "$serial" != "$last_serial" ]; then
+      serial_changed=1
+    fi
+
+    if [ "$last_full_render" -eq 0 ]; then
       "$EXT_DIR/bin/render_once.sh" full >> "$LOG_FILE" 2>&1
       last_serial="$serial"
       last_full_render="$(date +%s)"
       last_light_render="$last_full_render"
-    elif [ -z "$last_serial" ] || [ "$serial" != "$last_serial" ] || [ "$light_elapsed" -ge "$LIGHT_RENDER_INTERVAL" ]; then
+    elif [ "$serial_changed" -eq 1 ]; then
+      "$EXT_DIR/bin/render_once.sh" light >> "$LOG_FILE" 2>&1
+      last_serial="$serial"
+      last_light_render="$(date +%s)"
+      last_full_render="$last_light_render"
+    elif [ "$full_elapsed" -ge "$FULL_RENDER_INTERVAL" ]; then
+      "$EXT_DIR/bin/render_once.sh" full >> "$LOG_FILE" 2>&1
+      last_serial="$serial"
+      last_full_render="$(date +%s)"
+      last_light_render="$last_full_render"
+    elif [ "$light_elapsed" -ge "$LIGHT_RENDER_INTERVAL" ]; then
       "$EXT_DIR/bin/render_once.sh" light >> "$LOG_FILE" 2>&1
       last_serial="$serial"
       last_light_render="$(date +%s)"
