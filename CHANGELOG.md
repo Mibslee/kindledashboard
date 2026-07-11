@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.3.0
+
+### Added
+
+- Added data-driven black-and-white weather icons for clear, cloudy, fog, wind, snow, thunder, and light/moderate/heavy rain states.
+- Added precipitation intensity and the highest-value rain window to the weather and overview pages.
+- Added `--dump-preview <mode>` for generating privacy-safe public screenshots from fixed sample data.
+
+### Changed
+
+- Rebuilt the overview around three decisions: weather risk, current Codex work with quota, and Mac health.
+- Replaced the generic hourly weather list with an icon-led timeline that keeps time, condition, temperature, and rain probability aligned.
+- Improved music, calendar, and focus empty/supporting states so unused space communicates a clear next action.
+- Tightened CJK line wrapping to prevent long tasks from crossing the right edge.
+
+### Fixed
+
+- Avoided SVG transforms in weather artwork so the production `sips` PNG path remains compatible with the Kindle renderer.
+- Prevented repository preview generation from accidentally capturing live Codex tasks or local system data.
+
 ## v0.2.2
 
 ### Added

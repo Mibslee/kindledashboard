@@ -299,20 +299,36 @@ final class AppState: @unchecked Sendable {
 }
 
 final class CommandRunner {
+    struct Result {
+        let output: String
+        let error: String
+        let status: Int32
+    }
+
     static func run(_ launchPath: String, _ arguments: [String]) -> String {
+        runResult(launchPath, arguments).output
+    }
+
+    static func runResult(_ launchPath: String, _ arguments: [String]) -> Result {
         let process = Process()
-        let pipe = Pipe()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
         do {
             try process.run()
             process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            return Result(
+                output: String(data: outputData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                error: String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                status: process.terminationStatus
+            )
         } catch {
-            return ""
+            return Result(output: "", error: error.localizedDescription, status: -1)
         }
     }
 
@@ -322,6 +338,10 @@ final class CommandRunner {
 
     static func appleScript(_ source: String) -> String {
         run("/usr/bin/osascript", ["-e", source])
+    }
+
+    static func appleScriptResult(_ source: String) -> Result {
+        runResult("/usr/bin/osascript", ["-e", source])
     }
 }
 
@@ -344,6 +364,8 @@ struct DashboardModel {
 
     let imageDataURI: String?
     let imageMeta: String?
+    let weatherCondition: WeatherCondition?
+    let weatherHours: [HourlyWeather]
 
     init(
         mode: KindleMode,
@@ -356,7 +378,9 @@ struct DashboardModel {
         footer: String,
         footerRight: String = "",
         imageDataURI: String? = nil,
-        imageMeta: String? = nil
+        imageMeta: String? = nil,
+        weatherCondition: WeatherCondition? = nil,
+        weatherHours: [HourlyWeather] = []
     ) {
         self.mode = mode
         self.orientation = orientation
@@ -369,6 +393,8 @@ struct DashboardModel {
         self.footerRight = footerRight
         self.imageDataURI = imageDataURI
         self.imageMeta = imageMeta
+        self.weatherCondition = weatherCondition
+        self.weatherHours = weatherHours
     }
 
     func withFooterRight(_ value: String) -> DashboardModel {
@@ -383,7 +409,9 @@ struct DashboardModel {
             footer: footer,
             footerRight: value,
             imageDataURI: imageDataURI,
-            imageMeta: imageMeta
+            imageMeta: imageMeta,
+            weatherCondition: weatherCondition,
+            weatherHours: weatherHours
         )
     }
 }
@@ -404,11 +432,114 @@ struct CodexLimitStatus {
     let rows: [String]
 }
 
+private final class CodexRateLimitResponseBox: @unchecked Sendable {
+    let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var buffer = ""
+    private var response: [String: Any]?
+
+    func append(_ data: Data) {
+        guard let text = String(data: data, encoding: .utf8) else { return }
+        lock.lock()
+        buffer += text
+        while let newline = buffer.firstIndex(of: "\n") {
+            let line = String(buffer[..<newline])
+            buffer.removeSubrange(...newline)
+            consume(line)
+        }
+        lock.unlock()
+    }
+
+    func result() -> [String: Any]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return response
+    }
+
+    private func consume(_ line: String) {
+        guard response == nil,
+              let data = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["id"] as? NSNumber)?.intValue == 2,
+              let result = object["result"] as? [String: Any] else {
+            return
+        }
+        response = result
+        semaphore.signal()
+    }
+}
+
+enum WeatherCondition: String {
+    case clear
+    case partlyCloudy
+    case cloudy
+    case overcast
+    case lightRain
+    case moderateRain
+    case heavyRain
+    case thunder
+    case snow
+    case fog
+    case wind
+    case unknown
+
+    var label: String {
+        switch self {
+        case .clear: return "晴"
+        case .partlyCloudy: return "晴间多云"
+        case .cloudy: return "多云"
+        case .overcast: return "阴"
+        case .lightRain: return "小雨"
+        case .moderateRain: return "中雨"
+        case .heavyRain: return "大雨"
+        case .thunder: return "雷雨"
+        case .snow: return "雪"
+        case .fog: return "雾"
+        case .wind: return "大风"
+        case .unknown: return "天气"
+        }
+    }
+
+    var isRain: Bool {
+        switch self {
+        case .lightRain, .moderateRain, .heavyRain, .thunder: return true
+        default: return false
+        }
+    }
+}
+
+struct HourlyWeather {
+    let time: String
+    let condition: WeatherCondition
+    let temperature: String
+    let rainChance: Int
+    let precipitationMM: Double
+
+    var rowText: String {
+        "\(time) \(condition.label) \(temperature) | 降水 \(rainChance)%"
+    }
+}
+
 struct WeatherSnapshot {
     let current: String
     let detail: String
+    let rainSummary: String
     let advice: String
-    let hourlyRows: [String]
+    let condition: WeatherCondition
+    let hourly: [HourlyWeather]
+
+    var hourlyRows: [String] {
+        hourly.map(\.rowText)
+    }
+}
+
+struct MacHealthSnapshot {
+    let status: String
+    let cpu: String
+    let memory: String
+    let thermal: String
+    let disk: String
+    let processRows: [String]
 }
 
 struct DashboardData {
@@ -439,24 +570,152 @@ struct DashboardData {
         return model.withFooterRight(snapshot.kindleBatteryText)
     }
 
+    static func preview(mode: KindleMode) -> DashboardModel {
+        let date = Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 11, hour: 9, minute: 30)) ?? Date()
+        let weatherHours = [
+            HourlyWeather(time: "10:00", condition: .lightRain, temperature: "+27°C", rainChance: 48, precipitationMM: 0.8),
+            HourlyWeather(time: "12:00", condition: .moderateRain, temperature: "+26°C", rainChance: 72, precipitationMM: 3.2),
+            HourlyWeather(time: "15:00", condition: .heavyRain, temperature: "+25°C", rainChance: 88, precipitationMM: 8.6),
+            HourlyWeather(time: "18:00", condition: .cloudy, temperature: "+26°C", rainChance: 25, precipitationMM: 0),
+            HourlyWeather(time: "21:00", condition: .clear, temperature: "+24°C", rainChance: 8, precipitationMM: 0)
+        ]
+        let common = (
+            orientation: KindleOrientation.portrait,
+            generatedAt: date,
+            footer: "公开预览数据",
+            footerRight: "Kindle 76%"
+        )
+
+        switch mode {
+        case .home:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "总览", subhead: "星期六, 7月 11",
+                metrics: [
+                    Metric(label: "天气", value: "小雨 +27°C，体感 +29°C", emphasis: true),
+                    Metric(label: "天气细节", value: "湿度 78% · 风 12 km/h", emphasis: false),
+                    Metric(label: "降雨", value: "15:00 大雨 · 88%", emphasis: false),
+                    Metric(label: "出门建议", value: "午后强降雨，尽量提前出门", emphasis: false),
+                    Metric(label: "Codex", value: "完善天气图标与总览信息层级", emphasis: true),
+                    Metric(label: "5h", value: "78%", emphasis: false),
+                    Metric(label: "周额度", value: "64%", emphasis: false),
+                    Metric(label: "Mac", value: "系统状态正常", emphasis: true),
+                    Metric(label: "CPU", value: "使用 24%", emphasis: false),
+                    Metric(label: "内存", value: "使用 58%", emphasis: false),
+                    Metric(label: "温控", value: "正常", emphasis: false)
+                ],
+                notes: [], footer: common.footer, footerRight: common.footerRight,
+                weatherCondition: .lightRain, weatherHours: weatherHours
+            )
+        case .weather:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "天气", subhead: "未来几小时 · 09:30 更新",
+                metrics: [
+                    Metric(label: "现在", value: "小雨 +27°C，体感 +29°C", emphasis: true),
+                    Metric(label: "细节", value: "湿度 78% · 风 12 km/h", emphasis: false),
+                    Metric(label: "降雨", value: "15:00 大雨 · 88%", emphasis: false),
+                    Metric(label: "建议", value: "午后强降雨，尽量提前出门", emphasis: false)
+                ],
+                notes: weatherHours.map(\.rowText), footer: common.footer, footerRight: common.footerRight,
+                weatherCondition: .lightRain, weatherHours: weatherHours
+            )
+        case .codex:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "Codex 看板", subhead: "09:30",
+                metrics: [
+                    Metric(label: "当前任务", value: "完善天气图标与总览信息层级", emphasis: true),
+                    Metric(label: "5h 剩余", value: "78%", emphasis: false),
+                    Metric(label: "周额度", value: "64%", emphasis: false),
+                    Metric(label: "重置", value: "3h18m", emphasis: false)
+                ],
+                notes: ["限额状态 | 额度正常，可继续", "5h 重置 | 今天 12:48", "周重置 | 周四 08:00", "下一步 | 完成真机检查"],
+                footer: common.footer, footerRight: common.footerRight
+            )
+        case .music:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "音乐", subhead: "播放中",
+                metrics: [
+                    Metric(label: "正在播放", value: "陈绮贞 - 旅行的意义", emphasis: true),
+                    Metric(label: "状态", value: "播放中", emphasis: false),
+                    Metric(label: "专辑", value: "华丽的冒险", emphasis: false)
+                ], notes: [], footer: common.footer, footerRight: common.footerRight
+            )
+        case .calendar:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "日历", subhead: "星期六, 7月 11",
+                metrics: [Metric(label: "下一项", value: "10:30 产品评审", emphasis: true)],
+                notes: ["确认发布清单 | 今天", "整理真机反馈 | 今天"],
+                footer: common.footer, footerRight: common.footerRight
+            )
+        case .focus:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "专注", subhead: "只做一件事",
+                metrics: [
+                    Metric(label: "当前任务", value: "完善天气图标与总览信息层级", emphasis: true),
+                    Metric(label: "建议专注", value: "50 分钟", emphasis: false)
+                ], notes: [], footer: common.footer, footerRight: common.footerRight
+            )
+        case .system:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "系统", subhead: "Mac 健康",
+                metrics: [
+                    Metric(label: "状态", value: "系统状态正常", emphasis: true),
+                    Metric(label: "CPU", value: "使用 24%", emphasis: false),
+                    Metric(label: "内存", value: "使用 58%", emphasis: false),
+                    Metric(label: "温控", value: "正常", emphasis: false)
+                ],
+                notes: ["系统盘 | 使用 42%", "WindowServer | CPU 8.2% / MEM 0.6%", "Music | CPU 2.1% / MEM 0.4%"],
+                footer: common.footer, footerRight: common.footerRight
+            )
+        case .screensaver:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "09:30", subhead: "星期六, 7月 11",
+                metrics: [], notes: [], footer: common.footer, footerRight: common.footerRight
+            )
+        case .document, .image:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: mode == .document ? "操作步骤.md" : "等待投射",
+                subhead: "公开预览", metrics: [], notes: ["选择内容 | Mac 顶栏"],
+                footer: common.footer, footerRight: common.footerRight
+            )
+        }
+    }
+
     private static func home(_ snapshot: AppSnapshot) -> DashboardModel {
         let weather = weatherSnapshot()
-        let battery = CommandRunner.shell("pmset -g batt | sed -n '2p' | awk -F';' '{gsub(/^[ \t]+|[ \t]+$/, \"\", $1); gsub(/^[ \t]+|[ \t]+$/, \"\", $2); print $1 \" | \" $2}'")
-        let next = nextCalendarLine()
+        let codex = codexActivity()
+        let mac = macHealthSnapshot()
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
             generatedAt: Date(),
-            headline: "今日概览",
+            headline: "总览",
             subhead: longDate(),
             metrics: [
-                Metric(label: "现在", value: weather.current, emphasis: true),
-                Metric(label: "日程", value: next, emphasis: false),
-                Metric(label: "Mac", value: battery.isEmpty ? "电量不可用" : battery, emphasis: false),
-                Metric(label: "建议", value: weather.advice, emphasis: false)
+                Metric(label: "天气", value: weather.current, emphasis: true),
+                Metric(label: "天气细节", value: weather.detail, emphasis: false),
+                Metric(label: "降雨", value: weather.rainSummary, emphasis: false),
+                Metric(label: "出门建议", value: weather.advice, emphasis: false),
+                Metric(label: "Codex", value: codex.currentTask, emphasis: true),
+                Metric(label: "5h", value: codex.limitStatus.primaryValue, emphasis: false),
+                Metric(label: "周额度", value: codex.limitStatus.weeklyValue, emphasis: false),
+                Metric(label: "Mac", value: mac.status, emphasis: true),
+                Metric(label: "CPU", value: mac.cpu, emphasis: false),
+                Metric(label: "内存", value: mac.memory, emphasis: false),
+                Metric(label: "温控", value: mac.thermal, emphasis: false)
             ],
-            notes: ["天气建议 | \(weather.advice)", "下一日程 | \(next)", "刷新节奏 | 轻刷 1 分钟 / 全刷 5 分钟"],
-            footer: footer(snapshot)
+            notes: [],
+            footer: footer(snapshot),
+            weatherCondition: weather.condition,
+            weatherHours: weather.hourly
         )
     }
 
@@ -568,16 +827,19 @@ struct DashboardData {
             metrics: [
                 Metric(label: "现在", value: weather.current, emphasis: true),
                 Metric(label: "细节", value: weather.detail, emphasis: false),
+                Metric(label: "降雨", value: weather.rainSummary, emphasis: false),
                 Metric(label: "建议", value: weather.advice, emphasis: false)
             ],
             notes: weather.hourlyRows,
-            footer: footer(snapshot)
+            footer: footer(snapshot),
+            weatherCondition: weather.condition,
+            weatherHours: weather.hourly
         )
     }
 
     private static func calendar(_ snapshot: AppSnapshot) -> DashboardModel {
         let next = nextCalendarLine()
-        let reminders = CommandRunner.shell("osascript -e 'tell application \"Reminders\" to if it is running then return name of reminders whose completed is false' 2>/dev/null | tr ',' '\\n' | sed -n '1,6p'")
+        let reminders = reminderLines()
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
@@ -586,10 +848,10 @@ struct DashboardData {
             subhead: longDate(),
             metrics: [
                 Metric(label: "下一项", value: next, emphasis: true),
-                Metric(label: "待办", value: reminders.isEmpty ? "暂无提醒事项" : "\(listLines(reminders, fallback: "").count) 项提醒", emphasis: false),
+                Metric(label: "待办", value: reminders.isEmpty ? "暂无待办" : "\(reminders.count) 项待办", emphasis: false),
                 Metric(label: "建议", value: (next.contains("暂未") || next.contains("暂无")) ? "留给深度工作" : "提前 10 分钟准备", emphasis: false)
             ],
-            notes: listLines(reminders, fallback: "今天没有提醒事项 | 可专注"),
+            notes: reminders,
             footer: footer(snapshot)
         )
     }
@@ -605,7 +867,7 @@ struct DashboardData {
             subhead: "专注状态牌",
             metrics: [
                 Metric(label: "当前任务", value: currentTask, emphasis: true),
-                Metric(label: "时间块", value: "50 分钟", emphasis: false),
+                Metric(label: "建议专注", value: "50 分钟", emphasis: false),
                 Metric(label: "Mac", value: uptime.isEmpty ? "就绪" : uptime, emphasis: false)
             ],
             notes: ["只做一件事 | 当前", "关闭额外页面 | 建议", "50 分钟后休息 | 建议"],
@@ -614,12 +876,7 @@ struct DashboardData {
     }
 
     private static func system(_ snapshot: AppSnapshot) -> DashboardModel {
-        let rawCpu = firstMatch(CommandRunner.run("/usr/bin/top", ["-l", "1", "-n", "0"]), pattern: #"CPU usage: ([^\n]+)"#) ?? ""
-        let cpu = cpuSummary(rawCpu)
-        let memory = CommandRunner.shell("vm_stat | awk '/Pages free/ {free=$3} /Pages active/ {active=$3} /Pages wired down/ {wired=$4} END {gsub(/\\./,\"\",free); gsub(/\\./,\"\",active); gsub(/\\./,\"\",wired); printf \"空闲 %.1fGB | 活跃 %.1fGB | 常驻 %.1fGB\", free*4096/1024/1024/1024, active*4096/1024/1024/1024, wired*4096/1024/1024/1024}'")
-        let disk = CommandRunner.shell("df -h / | awk 'NR==2 {print \"可用 \" $4 \" / 总 \" $2}'")
-        let procs = CommandRunner.shell("ps -arcwwwxo %cpu,%mem,comm | sed -n '2,9p'")
-        let advice = systemAdvice(cpuSummary: cpu, memory: memory)
+        let mac = macHealthSnapshot()
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
@@ -627,13 +884,30 @@ struct DashboardData {
             headline: "系统",
             subhead: timestamp(),
             metrics: [
-                Metric(label: "状态", value: advice, emphasis: true),
-                Metric(label: "CPU", value: cpu, emphasis: false),
-                Metric(label: "内存", value: memory.isEmpty ? "不可用" : memory, emphasis: false),
-                Metric(label: "磁盘", value: disk.isEmpty ? "不可用" : disk, emphasis: false)
+                Metric(label: "状态", value: mac.status, emphasis: true),
+                Metric(label: "CPU", value: mac.cpu, emphasis: false),
+                Metric(label: "内存", value: mac.memory, emphasis: false),
+                Metric(label: "温控", value: mac.thermal, emphasis: false)
             ],
-            notes: processRows(procs).prefix(5).map { $0 },
+            notes: ["系统盘 | \(mac.disk)"] + mac.processRows.prefix(4),
             footer: footer(snapshot)
+        )
+    }
+
+    private static func macHealthSnapshot() -> MacHealthSnapshot {
+        let rawCpu = firstMatch(CommandRunner.run("/usr/bin/top", ["-l", "1", "-n", "0"]), pattern: #"CPU usage: ([^\n]+)"#) ?? ""
+        let cpu = cpuSummary(rawCpu)
+        let memory = memoryUsageSummary()
+        let thermal = thermalStateSummary()
+        let disk = CommandRunner.shell("df -k / | awk 'NR==2 {print \"使用 \" $5}'")
+        let procs = CommandRunner.shell("ps -arcwwwxo %cpu,%mem,comm | sed -n '2,9p'")
+        return MacHealthSnapshot(
+            status: systemAdvice(cpuSummary: cpu, memory: memory, thermal: thermal),
+            cpu: cpu.isEmpty ? "不可用" : cpu,
+            memory: memory.isEmpty ? "不可用" : memory,
+            thermal: thermal,
+            disk: disk.isEmpty ? "不可用" : disk,
+            processRows: processRows(procs)
         )
     }
 
@@ -655,8 +929,51 @@ struct DashboardData {
     }
 
     private static func nextCalendarLine() -> String {
-        let value = CommandRunner.shell("command -v icalBuddy >/dev/null && icalBuddy -nc -nrd -ea -li 1 eventsToday 2>/dev/null | head -1 || true")
-        return value.isEmpty ? "暂无日程" : value
+        let result = CommandRunner.appleScriptResult("""
+        tell application "Calendar"
+          set startOfDay to current date
+          set time of startOfDay to 0
+          set endOfDay to startOfDay + (24 * 60 * 60)
+          set nextEvent to missing value
+          repeat with calendarRef in calendars
+            set matches to every event of calendarRef whose start date is greater than or equal to startOfDay and start date is less than endOfDay
+            repeat with eventRef in matches
+              if nextEvent is missing value or start date of eventRef is less than start date of nextEvent then
+                set nextEvent to eventRef
+              end if
+            end repeat
+          end repeat
+          if nextEvent is missing value then return ""
+          return summary of nextEvent
+        end tell
+        """)
+        if result.status != 0 {
+            return "日历未授权"
+        }
+        return result.output.isEmpty ? "暂无日程" : result.output
+    }
+
+    private static func reminderLines() -> [String] {
+        let result = CommandRunner.appleScriptResult("""
+        tell application "Reminders"
+          set matches to reminders whose completed is false
+          if (count of matches) is 0 then return ""
+          set limitCount to count of matches
+          if limitCount is greater than 6 then set limitCount to 6
+          set output to ""
+          repeat with itemRef in items 1 thru limitCount of matches
+            set output to output & name of itemRef & linefeed
+          end repeat
+          return output
+        end tell
+        """)
+        if result.status != 0 {
+            return ["提醒事项未授权 | 未连接"]
+        }
+        return result.output
+            .split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     private static func markdownRows(_ markdown: String) -> [String] {
@@ -710,8 +1027,10 @@ struct DashboardData {
             return WeatherSnapshot(
                 current: fallback.isEmpty ? "天气源暂不可用" : fallback.replacingOccurrences(of: "\n", with: "，"),
                 detail: fallback.isEmpty ? "等待下次刷新" : "来自 wttr.in",
-                advice: fallback.isEmpty ? "天气源暂不可用" : "出门前看温度和风",
-                hourlyRows: ["天气源暂不可用 | 稍后自动刷新"]
+                rainSummary: "降雨待更新",
+                advice: fallback.isEmpty ? "天气稍后更新，按当前计划推进" : "出门前看温度和风",
+                condition: .unknown,
+                hourly: []
             )
         }
 
@@ -719,30 +1038,34 @@ struct DashboardData {
         let feels = intText(current["FeelsLikeC"]) ?? temp
         let humidity = intText(current["humidity"]) ?? "--"
         let wind = intText(current["windspeedKmph"]) ?? "--"
-        let desc = weatherDescription(current) ?? "当前天气"
-        let currentText = "\(desc) \(signedTemperature(temp))，体感 \(signedTemperature(feels))"
-        let detailText = "湿度 \(humidity)%｜风 \(wind)km/h"
+        let condition = weatherCondition(current)
+        let currentText = "\(condition.label) \(signedTemperature(temp))，体感 \(signedTemperature(feels))"
+        let detailText = "湿度 \(humidity)% · 风 \(wind) km/h"
 
-        let hourly = hourlyWeatherRows(root: root)
+        let hourly = hourlyWeather(root: root)
+        let rainSummary = rainOutlook(hourly)
         let advice = weatherAdvice(
             temperature: Int(temp),
             feelsLike: Int(feels),
             humidity: Int(humidity),
+            currentCondition: condition,
             rows: hourly
         )
         return WeatherSnapshot(
             current: currentText,
             detail: detailText,
+            rainSummary: rainSummary,
             advice: advice,
-            hourlyRows: hourly.isEmpty ? ["未来几小时 | 暂无数据"] : hourly
+            condition: condition,
+            hourly: hourly
         )
     }
 
-    private static func hourlyWeatherRows(root: [String: Any]) -> [String] {
+    private static func hourlyWeather(root: [String: Any]) -> [HourlyWeather] {
         guard let days = root["weather"] as? [[String: Any]] else { return [] }
         let nowHour = Calendar.current.component(.hour, from: Date())
         let threshold = nowHour * 100
-        var rows: [String] = []
+        var rows: [HourlyWeather] = []
 
         for (dayIndex, day) in days.prefix(2).enumerated() {
             guard let hourly = day["hourly"] as? [[String: Any]] else { continue }
@@ -752,39 +1075,84 @@ struct DashboardData {
                 let hour = timeValue / 100
                 let prefix = dayIndex == 0 ? String(format: "%02d:00", hour) : "明天 \(String(format: "%02d:00", hour))"
                 let temp = intText(item["tempC"]) ?? "--"
-                let rain = intText(item["chanceofrain"]) ?? "0"
-                let desc = weatherDescription(item) ?? "天气"
-                rows.append("\(prefix) \(desc) \(signedTemperature(temp)) | 降水 \(rain)%")
+                let rain = Int(intText(item["chanceofrain"]) ?? "0") ?? 0
+                let precipitation = number(item["precipMM"]) ?? 0
+                rows.append(HourlyWeather(
+                    time: prefix,
+                    condition: weatherCondition(item),
+                    temperature: signedTemperature(temp),
+                    rainChance: rain,
+                    precipitationMM: precipitation
+                ))
                 if rows.count >= 5 { return rows }
             }
         }
         return rows
     }
 
-    private static func weatherDescription(_ object: [String: Any]) -> String? {
+    private static func weatherDescription(_ object: [String: Any]) -> String {
         if let descriptions = object["weatherDesc"] as? [[String: Any]],
            let value = descriptions.first?["value"] as? String,
            !value.isEmpty {
-            return localizedWeather(value)
+            return value
         }
-        return nil
+        return ""
     }
 
-    private static func localizedWeather(_ value: String) -> String {
-        let lower = value.lowercased()
-        if lower.contains("rain") || lower.contains("drizzle") { return "有雨" }
-        if lower.contains("snow") { return "有雪" }
-        if lower.contains("thunder") { return "雷雨" }
-        if lower.contains("fog") || lower.contains("mist") { return "雾" }
-        if lower.contains("cloud") || lower.contains("overcast") { return "多云" }
-        if lower.contains("sun") || lower.contains("clear") { return "晴" }
-        return value
+    private static func weatherCondition(_ object: [String: Any]) -> WeatherCondition {
+        let description = weatherDescription(object).lowercased()
+        let precipitation = number(object["precipMM"]) ?? 0
+
+        if description.contains("thunder") { return .thunder }
+        if description.contains("snow") || description.contains("sleet") || description.contains("blizzard") { return .snow }
+        if description.contains("torrential") || description.contains("heavy rain") || precipitation >= 7.6 { return .heavyRain }
+        if description.contains("moderate rain") || precipitation >= 2.5 { return .moderateRain }
+        if description.contains("rain") || description.contains("drizzle") || precipitation > 0 { return .lightRain }
+        if description.contains("fog") || description.contains("mist") || description.contains("haze") { return .fog }
+        if description.contains("wind") || description.contains("gale") { return .wind }
+        if description.contains("overcast") { return .overcast }
+        if description.contains("partly") || description.contains("sunny interval") { return .partlyCloudy }
+        if description.contains("cloud") { return .cloudy }
+        if description.contains("sun") || description.contains("clear") { return .clear }
+        return .unknown
     }
 
-    private static func weatherAdvice(temperature: Int?, feelsLike: Int?, humidity: Int?, rows: [String]) -> String {
-        let rowText = rows.joined(separator: " ")
-        if rowText.range(of: #"降水 ([6-9]\d|100)%"#, options: .regularExpression) != nil {
-            return "带伞，避开强降水"
+    private static func rainOutlook(_ rows: [HourlyWeather]) -> String {
+        let rainy = rows.filter { $0.condition.isRain || $0.rainChance >= 40 }
+        guard let strongest = rainy.max(by: { rainScore($0) < rainScore($1) }) else {
+            return "未来几小时无明显降雨"
+        }
+        return "\(strongest.time) \(strongest.condition.label) · \(strongest.rainChance)%"
+    }
+
+    private static func rainScore(_ hour: HourlyWeather) -> Double {
+        let intensity: Double
+        switch hour.condition {
+        case .thunder: intensity = 5
+        case .heavyRain: intensity = 4
+        case .moderateRain: intensity = 3
+        case .lightRain: intensity = 2
+        default: intensity = 1
+        }
+        return intensity * 100 + hour.precipitationMM * 10 + Double(hour.rainChance)
+    }
+
+    private static func weatherAdvice(
+        temperature: Int?,
+        feelsLike: Int?,
+        humidity: Int?,
+        currentCondition: WeatherCondition,
+        rows: [HourlyWeather]
+    ) -> String {
+        let conditions = [currentCondition] + rows.map(\.condition)
+        if conditions.contains(.thunder) || conditions.contains(.heavyRain) {
+            return "强降雨，尽量推迟出门"
+        }
+        if conditions.contains(.moderateRain) {
+            return "带伞，避开降雨时段"
+        }
+        if conditions.contains(.lightRain) {
+            return "带折叠伞，注意湿滑"
         }
         if let feelsLike, feelsLike >= 34 {
             return "闷热，少外出多补水"
@@ -825,11 +1193,33 @@ struct DashboardData {
             .replacingOccurrences(of: " idle", with: " 空闲")
     }
 
-    private static func systemAdvice(cpuSummary: String, memory: String) -> String {
+    private static func memoryUsageSummary() -> String {
+        let raw = CommandRunner.run("/usr/bin/memory_pressure", [])
+        guard let freeText = firstMatch(raw, pattern: #"free percentage:\s*(\d+)%"#),
+              let free = Int(freeText) else {
+            return "不可用"
+        }
+        return "使用 \(max(0, min(100, 100 - free)))%"
+    }
+
+    private static func thermalStateSummary() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return "正常"
+        case .fair: return "偏热"
+        case .serious: return "较热"
+        case .critical: return "过热"
+        @unknown default: return "未知"
+        }
+    }
+
+    private static func systemAdvice(cpuSummary: String, memory: String, thermal: String) -> String {
+        if thermal == "过热" || thermal == "较热" {
+            return "温度压力较高，减少负载"
+        }
         if let cpu = firstMatch(cpuSummary, pattern: #"使用 (\d+)%"#).flatMap(Int.init), cpu >= 80 {
             return "CPU 压力高，先看进程"
         }
-        if memory.contains("空闲 0.") {
+        if let used = firstMatch(memory, pattern: #"使用 (\d+)%"#).flatMap(Int.init), used >= 85 {
             return "内存偏紧，少开大应用"
         }
         return "系统状态正常"
@@ -856,23 +1246,23 @@ struct DashboardData {
     }
 
     private static func recentCodexSessions() -> [String] {
-        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/session_index.jsonl")
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+        let database = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/state_5.sqlite")
+        let sql = """
+        SELECT title, updated_at
+        FROM threads
+        WHERE archived = 0 AND title <> ''
+        ORDER BY recency_at_ms DESC
+        LIMIT 10;
+        """
+        guard let output = try? runSQLite(database: database, sql: sql), !output.isEmpty else {
             return ["暂无 Codex 会话记录"]
         }
-        let sessions = content.split(separator: "\n").compactMap { line -> (name: String, updated: String, display: String)? in
-            guard let data = String(line).data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return nil
-            }
-            let name = (object["thread_name"] as? String) ?? (object["name"] as? String) ?? "Untitled thread"
-            let rawUpdated = object["updated_at"] as? String ?? ""
-            let displayUpdated = rawUpdated.prefix(16).replacingOccurrences(of: "T", with: " ")
-            let display = displayUpdated.isEmpty ? name : "\(name) | \(displayUpdated)"
-            return (name, rawUpdated, display)
+        return output.split(separator: "\n").compactMap { row in
+            let fields = row.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard let title = fields.first, !title.isEmpty else { return nil }
+            let timestamp = fields.count > 1 ? fields[1] : ""
+            return timestamp.isEmpty ? title : "\(title) | \(timestampText(Date(timeIntervalSince1970: Double(timestamp) ?? 0)))"
         }
-        let sorted = sessions.sorted { $0.updated > $1.updated }.prefix(10).map(\.display)
-        return sorted.isEmpty ? ["暂无 Codex 会话记录"] : Array(sorted)
     }
 
     private static func codexActivity() -> CodexActivity {
@@ -902,10 +1292,109 @@ struct DashboardData {
     }
 
     private static func codexLimitStatus() -> CodexLimitStatus {
+        if let live = codexRateLimitFromAppServer() {
+            return live
+        }
         if let live = codexRateLimitFromLogs() {
             return live
         }
         return codexLocalUsageStatus()
+    }
+
+    private static func codexRateLimitFromAppServer() -> CodexLimitStatus? {
+        let cacheKey = "KindleDashboard.CodexRateLimits"
+        let cacheDateKey = "KindleDashboard.CodexRateLimitsDate"
+        let defaults = UserDefaults.standard
+        let now = Date()
+
+        if let cachedData = defaults.data(forKey: cacheKey),
+           let capturedAt = defaults.object(forKey: cacheDateKey) as? Date,
+           now.timeIntervalSince(capturedAt) < 5 * 60,
+           let root = try? JSONSerialization.jsonObject(with: cachedData) as? [String: Any],
+           let status = codexLimitStatus(from: root, capturedAt: capturedAt) {
+            return status
+        }
+
+        let paths = [
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "/Applications/Codex.app/Contents/Resources/codex",
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex"
+        ]
+        guard let executable = paths.first(where: FileManager.default.isExecutableFile(atPath:)) else {
+            return cachedCodexRateLimit(defaults: defaults, dataKey: cacheKey, dateKey: cacheDateKey, maxAge: 15 * 60)
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["app-server", "--stdio"]
+        let inputPipe = Pipe()
+        let outputPipe = Pipe()
+        process.standardInput = inputPipe
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+        let responseBox = CodexRateLimitResponseBox()
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                responseBox.append(data)
+            }
+        }
+
+        guard (try? process.run()) != nil else {
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+            return cachedCodexRateLimit(defaults: defaults, dataKey: cacheKey, dateKey: cacheDateKey, maxAge: 15 * 60)
+        }
+
+        let initialize: [String: Any] = [
+            "id": 1,
+            "method": "initialize",
+            "params": [
+                "clientInfo": ["name": "KindleDashboard", "version": "1.0"],
+                "capabilities": ["experimentalApi": true]
+            ]
+        ]
+        let request: [String: Any] = ["id": 2, "method": "account/rateLimits/read", "params": NSNull()]
+        for object in [initialize, request] {
+            if var data = try? JSONSerialization.data(withJSONObject: object) {
+                data.append(Data("\n".utf8))
+                inputPipe.fileHandleForWriting.write(data)
+            }
+        }
+
+        let waitResult = responseBox.semaphore.wait(timeout: .now() + 5)
+        inputPipe.fileHandleForWriting.closeFile()
+        outputPipe.fileHandleForReading.readabilityHandler = nil
+        if process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+        }
+
+        if waitResult == .success,
+           let root = responseBox.result(),
+           let data = try? JSONSerialization.data(withJSONObject: root),
+           let status = codexLimitStatus(from: root, capturedAt: now) {
+            defaults.set(data, forKey: cacheKey)
+            defaults.set(now, forKey: cacheDateKey)
+            defaults.synchronize()
+            return status
+        }
+        return cachedCodexRateLimit(defaults: defaults, dataKey: cacheKey, dateKey: cacheDateKey, maxAge: 15 * 60)
+    }
+
+    private static func cachedCodexRateLimit(
+        defaults: UserDefaults,
+        dataKey: String,
+        dateKey: String,
+        maxAge: TimeInterval
+    ) -> CodexLimitStatus? {
+        guard let data = defaults.data(forKey: dataKey),
+              let capturedAt = defaults.object(forKey: dateKey) as? Date,
+              Date().timeIntervalSince(capturedAt) < maxAge,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return codexLimitStatus(from: root, capturedAt: capturedAt)
     }
 
     private static func codexRateLimitFromLogs() -> CodexLimitStatus? {
@@ -1151,8 +1640,8 @@ struct DashboardData {
     private static func recentCodexMessages(limit: Int) -> [(text: String, timestamp: String)] {
         var messages: [(text: String, timestamp: String)] = []
 
-        for file in codexSessionFiles().prefix(12) {
-            guard let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
+        for file in codexSessionFiles().prefix(6) {
+            guard let content = tailText(of: file, maxBytes: 2_000_000) else { continue }
             for line in content.split(separator: "\n") {
                 guard let data = String(line).data(using: .utf8),
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1206,34 +1695,16 @@ struct DashboardData {
             files.append((url, modified))
         }
 
-        let sorted = files.sorted { $0.modified > $1.modified }.map(\.url)
-        let indexedIDs = indexedCodexSessionIDs()
-        guard !indexedIDs.isEmpty else { return sorted }
-
-        let indexedFiles = sorted.filter { url in
-            guard let id = codexSessionID(from: url) else { return false }
-            return indexedIDs.contains(id)
-        }
-        return indexedFiles.isEmpty ? sorted : indexedFiles
+        return files.sorted { $0.modified > $1.modified }.map(\.url)
     }
 
-    private static func indexedCodexSessionIDs() -> Set<String> {
-        let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex/session_index.jsonl")
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-        let ids = content.split(separator: "\n").compactMap { line -> String? in
-            guard let data = String(line).data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return nil
-            }
-            return object["id"] as? String
-        }
-        return Set(ids)
-    }
-
-    private static func codexSessionID(from url: URL) -> String? {
-        let name = url.deletingPathExtension().lastPathComponent
-        let pattern = #"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"#
-        return firstMatch(name, pattern: pattern)
+    private static func tailText(of url: URL, maxBytes: UInt64) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        let start = size > maxBytes ? size - maxBytes : 0
+        try? handle.seek(toOffset: start)
+        return String(data: handle.readDataToEndOfFile(), encoding: .utf8)
     }
 
     private static func cleanedCodexUserText(_ raw: String) -> String? {
@@ -1251,10 +1722,17 @@ struct DashboardData {
             "Assess the exact planned action",
             ">>> TRANSCRIPT",
             "<<< TRANSCRIPT",
+            ">>> APPROVAL REQUEST",
+            "<<< APPROVAL REQUEST",
             "Command completed:",
             "Command failed:"
         ]
         if internalPrefixes.contains(where: { trimmedRaw.hasPrefix($0) }) {
+            return nil
+        }
+        if trimmedRaw.hasPrefix("{")
+            && trimmedRaw.contains("\"command\"")
+            && (trimmedRaw.contains("\"sandbox_permissions\"") || trimmedRaw.contains("\"justification\"")) {
             return nil
         }
         if raw.contains("<environment_context>")
@@ -1267,7 +1745,7 @@ struct DashboardData {
             return nil
         }
 
-        let clean = raw
+        var clean = raw
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map(String.init)
             .filter { line in
@@ -1279,7 +1757,18 @@ struct DashboardData {
             }
             .joined(separator: " ")
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"^\[\d+\]\s+user:\s*"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if clean.hasPrefix("["),
+           let bracket = clean.firstIndex(of: "]") {
+            let suffix = clean[clean.index(after: bracket)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if suffix.hasPrefix("user:") {
+                clean = String(suffix.dropFirst("user:".count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
 
         guard clean.count >= 2, clean.count <= 600 else { return nil }
         return clean
@@ -1511,48 +2000,18 @@ struct SVGRenderer {
         let size = KindleOrientation.portrait.frameSize
         let w = size.width
         let h = size.height
-        if model.mode == .home {
-            return homeSVG(width: w, height: h)
-        }
-        let margin = 24
-        let mainBottom = 1212
-        let widgetTop = 1228
-        let widgetHeight = 164
-        let footerY = 1430
-        let headerY = margin
-        let headerHeight = 70
-        var body = ""
-
-        body += rect(x: margin, y: headerY, width: w - margin * 2, height: mainBottom - headerY, stroke: 5)
-        body += rect(x: margin, y: headerY, width: w - margin * 2, height: headerHeight, stroke: 0, fill: "#000")
-        body += centeredText(nativeTitle, centerX: w / 2, y: headerY + 47, size: 30, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += rightText("MAC", rightX: w - margin - 30, y: headerY + 47, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-
-        body += pageContent(x: margin + 32, y: headerY + headerHeight + 32, width: w - margin * 2 - 64, bottom: mainBottom - 32)
-        body += widgetRail(x: margin, y: widgetTop, width: w - margin * 2, height: widgetHeight)
-        body += line(x1: margin, y1: footerY - 36, x2: w - margin, y2: footerY - 36, stroke: 3)
-        body += text("竖屏信息牌 | Mac 顶栏控制 | \(DashboardData.timestamp())", x: margin, y: footerY, size: 21, weight: "400", family: "Menlo, Monaco, monospace")
-        body += rightText(model.footerRight, rightX: w - margin, y: footerY, size: 21, weight: "400", family: "Menlo, Monaco, monospace")
-
-        return """
-        <svg xmlns="http://www.w3.org/2000/svg" width="\(w)" height="\(h)" viewBox="0 0 \(w) \(h)">
-          <rect x="0" y="0" width="\(w)" height="\(h)" fill="#fff"/>
-          \(body)
-        </svg>
-        """
-    }
-
-    private func homeSVG(width w: Int, height h: Int) -> String {
         let margin = 68
-        let widgetTop = 1248
-        let widgetHeight = 160
-        let footerY = 1430
+        let footerY = 1414
         var body = ""
-        body += pageContent(x: margin, y: 42, width: w - margin * 2, bottom: 1190)
-        body += widgetRail(x: margin, y: widgetTop, width: w - margin * 2, height: widgetHeight)
-        body += line(x1: margin, y1: footerY - 34, x2: w - margin, y2: footerY - 34, stroke: 2)
-        body += text("Kindle Dashboard · \(DashboardData.timestamp())", x: margin, y: footerY, size: 21, weight: "400", family: "Menlo, Monaco, monospace")
-        body += rightText(model.footerRight, rightX: w - margin, y: footerY, size: 21, weight: "400", family: "Menlo, Monaco, monospace")
+
+        body += pageContent(x: margin, y: 42, width: w - margin * 2, bottom: footerY - 54)
+        if model.mode != .screensaver {
+            body += line(x1: margin, y1: footerY - 34, x2: w - margin, y2: footerY - 34, stroke: 2)
+            body += text("更新 \(DashboardData.clockTime())", x: margin, y: footerY, size: 23, weight: "400", family: "Menlo, Monaco, monospace")
+            if !model.footerRight.isEmpty && !model.footerRight.contains("--") {
+                body += rightText(model.footerRight, rightX: w - margin, y: footerY, size: 23, weight: "400", family: "Menlo, Monaco, monospace")
+            }
+        }
 
         return """
         <svg xmlns="http://www.w3.org/2000/svg" width="\(w)" height="\(h)" viewBox="0 0 \(w) \(h)">
@@ -1569,35 +2028,6 @@ struct SVGRenderer {
     private func rect(x: Int, y: Int, width: Int, height: Int, stroke: Int, fill: String) -> String {
         let strokePart = stroke > 0 ? " stroke=\"#000\" stroke-width=\"\(stroke)\"" : ""
         return "<rect x=\"\(x)\" y=\"\(y)\" width=\"\(width)\" height=\"\(height)\" fill=\"\(fill)\"\(strokePart)/>"
-    }
-
-    private var nativeTitle: String {
-        switch model.mode {
-        case .home: return "首页"
-        case .codex: return "CODEX"
-        case .document: return "文档"
-        case .image: return "投射"
-        case .music: return "音乐"
-        case .weather: return "天气"
-        case .calendar: return "日历"
-        case .focus: return "专注"
-        case .system: return "系统"
-        case .screensaver: return "屏保"
-        }
-    }
-
-    private var sectionTitle: String {
-        switch model.mode {
-        case .codex: return "最近工作"
-        case .document: return "文档内容"
-        case .image: return "投射内容"
-        case .music: return "控制"
-        case .weather: return "未来几小时"
-        case .calendar, .home: return "今日"
-        case .focus: return "专注规则"
-        case .system: return "资源压力"
-        case .screensaver: return "空闲状态"
-        }
     }
 
     private func line(x1: Int, y1: Int, x2: Int, y2: Int, stroke: Int) -> String {
@@ -1649,177 +2079,424 @@ struct SVGRenderer {
 
     private func homeContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("今天", x: x, y: y + 128, size: 154, weight: "700")
-        body += text(model.subhead, x: x + 6, y: y + 194, size: 36, weight: "400")
-        body += modeArt(cx: x + width - 78, cy: y + 108)
+        body += pageHeading("总览", subtitle: model.subhead, x: x, y: y, width: width)
+        body += modeArt(cx: x + width - 76, cy: y + 94)
 
-        if let primary = model.metrics.first {
-            body += text(primary.label, x: x, y: y + 302, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
-            body += wrapped(primary.value, x: x, y: y + 368, width: width - 24, size: 54, maxLines: 2)
-        }
+        body += text("天气", x: x, y: y + 250, size: 29, weight: "700", family: "Menlo, Monaco, monospace")
+        body += rightText(metricValue("降雨", fallback: "降雨待更新"), rightX: x + width, y: y + 250, size: 31, weight: "700")
+        body += semanticWeather(metricValue("天气", fallback: "天气源暂不可用"), x: x, y: y + 342, width: width, primarySize: 70, secondarySize: 48)
+        body += text(metricValue("天气细节", fallback: ""), x: x, y: y + 492, size: 36, weight: "400")
+        body += emphasisBand(label: "现在最值得注意", value: metricValue("出门建议", fallback: "天气稍后更新"), x: x, y: y + 540, width: width, height: 150, valueSize: 48)
 
-        let adviceTop = y + 524
-        body += rect(x: x, y: adviceTop, width: width, height: 132, stroke: 0, fill: "#111")
-        body += text("接下来看什么", x: x + 30, y: adviceTop + 46, size: 25, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += text(homeAdvice, x: x + 30, y: adviceTop + 102, size: 42, weight: "700", fill: "#fff")
+        body += line(x1: x, y1: y + 754, x2: x + width, y2: y + 754, stroke: 3)
+        body += text("CODEX", x: x, y: y + 810, size: 28, weight: "700", family: "Menlo, Monaco, monospace")
+        let quota = "5h \(metricValue("5h", fallback: "--")) · 周 \(metricValue("周额度", fallback: "--"))"
+        body += rightText(quota, rightX: x + width, y: y + 810, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
+        body += wrapped(metricValue("Codex", fallback: "等待当前任务"), x: x, y: y + 900, width: width, size: 60, maxLines: 3)
 
-        body += metricStrip(x: x, y: y + 720, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)))
-        body += workList(x: x, y: y + 938, width: width, bottom: bottom, title: "今日", rows: model.notes)
+        body += line(x1: x, y1: y + 1110, x2: x + width, y2: y + 1110, stroke: 3)
+        body += text("MAC", x: x, y: y + 1162, size: 28, weight: "700", family: "Menlo, Monaco, monospace")
+        body += wrapped(metricValue("Mac", fallback: "状态不可用"), x: x, y: y + 1232, width: 310, size: 40, maxLines: 2)
+        let macMetrics = [
+            Metric(label: "CPU", value: compactSystemValue(Metric(label: "CPU", value: metricValue("CPU", fallback: "--"), emphasis: false)), emphasis: false),
+            Metric(label: "内存", value: compactSystemValue(Metric(label: "内存", value: metricValue("内存", fallback: "--"), emphasis: false)), emphasis: false),
+            Metric(label: "温控", value: metricValue("温控", fallback: "--"), emphasis: false)
+        ]
+        body += compactMetricStrip(x: x + 350, y: y + 1126, width: width - 350, metrics: macMetrics, height: 178)
         return body
     }
 
     private func codexContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("Codex", x: x, y: y + 98, size: 122, weight: "700")
-        body += rightText("工作台", rightX: x + width, y: y + 88, size: 38, weight: "700", family: "Menlo, Monaco, monospace")
-        body += text(model.subhead, x: x + 4, y: y + 154, size: 30, weight: "400", family: "Menlo, Monaco, monospace")
+        body += pageHeading("Codex", subtitle: "当前工作", x: x, y: y, width: width)
 
-        let heroTop = y + 214
-        body += rect(x: x, y: heroTop, width: width, height: 216, stroke: 0, fill: "#000")
-        body += text(model.metrics.first?.label ?? "当前任务", x: x + 30, y: heroTop + 50, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(model.metrics.first?.value ?? "等待 Codex 任务", x: x + 30, y: heroTop + 120, width: width - 60, size: 54, maxLines: 2, fill: "#fff")
+        let heroTop = y + 196
+        body += emphasisBand(label: "正在处理", value: model.metrics.first?.value ?? "等待 Codex 任务", x: x, y: heroTop, width: width, height: 300, valueSize: 70, maxLines: 3)
 
-        body += metricStrip(x: x, y: y + 478, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)))
-        body += workList(x: x, y: y + 690, width: width, bottom: bottom, title: "限额与最近任务", rows: model.notes)
+        body += summaryStrip(x: x, y: y + 560, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)), height: 220)
+        body += simpleList(x: x, y: y + 850, width: width, bottom: bottom, title: "状态与下一步", rows: Array(model.notes.prefix(5)), rowHeight: 88, valueSize: 39)
         return body
     }
 
     private func documentContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("文档", x: x, y: y + 96, size: 118, weight: "700")
-        body += text(model.subhead, x: x + 4, y: y + 154, size: 34, weight: "400")
-        body += documentIcon(cx: x + width - 82, cy: y + 84)
-
-        let titleTop = y + 202
-        body += rect(x: x, y: titleTop, width: width, height: 142, stroke: 0, fill: "#000")
-        body += text("当前对照", x: x + 30, y: titleTop + 48, size: 27, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(model.headline, x: x + 30, y: titleTop + 108, width: width - 60, size: 50, maxLines: 1, fill: "#fff")
-
-        body += documentList(x: x, y: y + 404, width: width, bottom: bottom - 46, rows: model.notes)
-        body += text("翻页：Mac 顶栏「文档上一页 / 下一页」", x: x, y: bottom - 8, size: 23, weight: "400", family: "Menlo, Monaco, monospace")
+        body += pageHeading("文档", subtitle: model.subhead, x: x, y: y, width: width)
+        body += wrapped(model.headline, x: x, y: y + 258, width: width - 110, size: 76, maxLines: 2)
+        body += documentIcon(cx: x + width - 58, cy: y + 234)
+        body += line(x1: x, y1: y + 382, x2: x + width, y2: y + 382, stroke: 4)
+        var rows = model.notes
+        if let first = rows.first {
+            let firstText = splitRow(first).left.replacingOccurrences(of: "■ ", with: "")
+            if firstText == model.headline {
+                rows.removeFirst()
+            }
+        }
+        body += readableDocument(x: x, y: y + 430, width: width, bottom: bottom, rows: rows)
         return body
     }
 
     private func imageContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("投射", x: x, y: y + 96, size: 118, weight: "700")
-        body += text(model.subhead, x: x + 4, y: y + 154, size: 34, weight: "400")
-        body += imageIcon(cx: x + width - 86, cy: y + 84)
+        body += pageHeading("投射", subtitle: model.headline, x: x, y: y, width: width)
+        body += imageIcon(cx: x + width - 62, cy: y + 72)
 
-        let heroTop = y + 202
-        body += rect(x: x, y: heroTop, width: width, height: 132, stroke: 0, fill: "#000")
-        body += text("当前内容", x: x + 30, y: heroTop + 48, size: 27, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(model.headline, x: x + 30, y: heroTop + 102, width: width - 60, size: 46, maxLines: 1, fill: "#fff")
-
-        let imageTop = y + 376
-        let imageBottom = bottom - 74
+        let imageTop = y + 190
+        let imageBottom = bottom - 46
         let imageHeight = max(220, imageBottom - imageTop)
-        body += rect(x: x, y: imageTop, width: width, height: imageHeight, stroke: 5)
+        body += rect(x: x, y: imageTop, width: width, height: imageHeight, stroke: model.imageDataURI == nil ? 3 : 0)
         if let dataURI = model.imageDataURI, !dataURI.isEmpty {
-            body += "<image x=\"\(x + 18)\" y=\"\(imageTop + 18)\" width=\"\(width - 36)\" height=\"\(imageHeight - 36)\" preserveAspectRatio=\"xMidYMid meet\" href=\"\(dataURI)\"/>"
+            body += "<image x=\"\(x)\" y=\"\(imageTop)\" width=\"\(width)\" height=\"\(imageHeight)\" preserveAspectRatio=\"xMidYMid meet\" href=\"\(dataURI)\"/>"
         } else {
-            body += centeredText("从 Mac 顶栏投射图片或截屏", centerX: x + width / 2, y: imageTop + imageHeight / 2 - 20, size: 36, weight: "700")
-            body += centeredText("支持 PNG / JPG / HEIC 等常见图片", centerX: x + width / 2, y: imageTop + imageHeight / 2 + 36, size: 26, weight: "400")
+            body += centeredText("等待图片", centerX: x + width / 2, y: imageTop + imageHeight / 2 - 12, size: 76, weight: "700")
+            body += centeredText("从 Mac 顶栏选择图片或截屏", centerX: x + width / 2, y: imageTop + imageHeight / 2 + 64, size: 36, weight: "400")
         }
-        body += text(model.imageMeta ?? "等待图片", x: x, y: bottom - 22, size: 24, weight: "400", family: "Menlo, Monaco, monospace")
         return body
     }
 
     private func musicContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("音乐", x: x, y: y + 100, size: 120, weight: "700")
-        body += text("桌面播放控制", x: x + 4, y: y + 158, size: 34, weight: "400")
-        body += modeArt(cx: x + width - 86, cy: y + 86)
+        body += pageHeading("音乐", subtitle: metricValue("状态", fallback: "播放状态"), x: x, y: y, width: width)
+        body += modeArt(cx: x + width - 76, cy: y + 78)
 
         let nowPlaying = model.metrics.first?.value ?? "音乐未运行"
-        body += rect(x: x, y: y + 232, width: width, height: 202, stroke: 0, fill: "#000")
-        body += text("正在播放", x: x + 30, y: y + 284, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(nowPlaying, x: x + 30, y: y + 350, width: width - 60, size: 54, maxLines: 2, fill: "#fff")
-
-        body += musicButtonRow(x: x, y: y + 482, width: width)
-        body += metricStrip(x: x, y: y + 664, width: width, metrics: Array(model.metrics.dropFirst().prefix(2)))
-        body += workList(x: x, y: y + 882, width: width, bottom: bottom, title: "控制与状态", rows: model.notes)
+        if nowPlaying.contains("未运行") || nowPlaying.contains("未播放") {
+            body += emphasisBand(label: "播放状态", value: "等待音乐", x: x, y: y + 240, width: width, height: 190, valueSize: 68)
+            body += simpleList(
+                x: x,
+                y: y + 520,
+                width: width,
+                bottom: min(bottom, y + 850),
+                title: "从哪里控制",
+                rows: ["开始播放 | Mac 顶栏", "切歌与暂停 | Mac 顶栏"],
+                rowHeight: 108,
+                valueSize: 44
+            )
+            return body
+        }
+        body += text("正在播放", x: x, y: y + 274, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
+        body += wrapped(nowPlaying, x: x, y: y + 382, width: width, size: 82, maxLines: 3)
+        body += line(x1: x, y1: y + 650, x2: x + width, y2: y + 650, stroke: 4)
+        body += text("专辑", x: x, y: y + 724, size: 28, weight: "700", family: "Menlo, Monaco, monospace")
+        body += wrapped(metricValue("专辑", fallback: "--"), x: x, y: y + 808, width: width, size: 54, maxLines: 2)
+        body += centeredText(metricValue("状态", fallback: "未播放"), centerX: x + width / 2, y: min(bottom - 100, y + 1110), size: 46, weight: "700")
         return body
     }
 
     private func weatherContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("天气", x: x, y: y + 104, size: 122, weight: "700")
-        body += text(model.subhead, x: x + 4, y: y + 164, size: 34, weight: "400")
-        body += modeArt(cx: x + width - 82, cy: y + 86)
+        body += pageHeading("天气", subtitle: model.subhead, x: x, y: y, width: width)
+        body += modeArt(cx: x + width - 76, cy: y + 78)
 
-        let heroTop = y + 236
-        body += rect(x: x, y: heroTop, width: width, height: 210, stroke: 0, fill: "#000")
-        body += text("出门前判断", x: x + 30, y: heroTop + 52, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(weatherAdvice, x: x + 30, y: heroTop + 126, width: width - 60, size: 54, maxLines: 2, fill: "#fff")
-
-        body += metricStrip(x: x, y: y + 500, width: width, metrics: model.metrics)
-        body += workList(x: x, y: y + 720, width: width, bottom: bottom, title: "未来几小时", rows: model.notes)
+        let current = metricValue("现在", fallback: "天气源暂不可用")
+        if current.contains("不可用") {
+            body += centeredText("天气暂不可用", centerX: x + width / 2, y: y + 500, size: 82, weight: "700")
+            body += centeredText("稍后自动刷新", centerX: x + width / 2, y: y + 590, size: 38, weight: "400")
+            return body
+        }
+        body += semanticWeather(current, x: x, y: y + 310, width: width, primarySize: 82, secondarySize: 56)
+        body += text(metricValue("细节", fallback: ""), x: x, y: y + 462, size: 40, weight: "400")
+        let rain = metricValue("降雨", fallback: "降雨待更新")
+        body += emphasisBand(label: rain, value: weatherAdvice, x: x, y: y + 525, width: width, height: 170, valueSize: 52)
+        body += weatherTimeline(x: x, y: y + 760, width: width, bottom: bottom)
         return body
     }
 
     private func calendarContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("日历", x: x, y: y + 104, size: 122, weight: "700")
-        body += text(model.subhead, x: x + 4, y: y + 164, size: 34, weight: "400")
-        body += modeArt(cx: x + width - 82, cy: y + 82)
+        body += pageHeading(monthTitle(model.generatedAt), subtitle: "\(calendarYear(model.generatedAt)) · \(lunarDateText(model.generatedAt))", x: x, y: y, width: width)
+        body += modeArt(cx: x + width - 76, cy: y + 74)
 
         let next = model.metrics.first?.value ?? "暂无日程"
-        let heroTop = y + 236
-        body += rect(x: x, y: heroTop, width: width, height: 210, stroke: 0, fill: "#000")
-        body += text("下一项", x: x + 30, y: heroTop + 52, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(next, x: x + 30, y: heroTop + 136, width: width - 60, size: 60, maxLines: 1, fill: "#fff")
-
-        body += metricStrip(x: x, y: y + 500, width: width, metrics: Array(model.metrics.dropFirst().prefix(2)))
-        body += workList(x: x, y: y + 720, width: width, bottom: bottom, title: "今日提醒", rows: model.notes)
+        body += monthCalendarGrid(date: model.generatedAt, x: x, y: y + 194, width: width)
+        body += line(x1: x, y1: y + 770, x2: x + width, y2: y + 770, stroke: 3)
+        body += text("下一项", x: x, y: y + 820, size: 27, weight: "700", family: "Menlo, Monaco, monospace")
+        body += wrapped(next, x: x, y: y + 892, width: width, size: 52, maxLines: 1)
+        if model.notes.isEmpty {
+            body += line(x1: x, y1: y + 960, x2: x + width, y2: y + 960, stroke: 3)
+            body += text("待办", x: x, y: y + 1010, size: 29, weight: "700", family: "Menlo, Monaco, monospace")
+            body += rightText("暂无待办", rightX: x + width, y: y + 1010, size: 38, weight: "700")
+            body += emphasisBand(label: "可用时间", value: "今天留白，适合安排深度工作", x: x, y: y + 1080, width: width, height: 170, valueSize: 48)
+        } else {
+            body += simpleList(x: x, y: y + 960, width: width, bottom: bottom, title: "待办", rows: Array(model.notes.prefix(3)), rowHeight: 96, valueSize: 42)
+        }
         return body
     }
 
     private func focusContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("专注", x: x, y: y + 104, size: 122, weight: "700")
-        body += text("只保留当前时间块", x: x + 4, y: y + 164, size: 34, weight: "400")
-        body += modeArt(cx: x + width - 82, cy: y + 86)
+        body += pageHeading("专注", subtitle: "只做一件事", x: x, y: y, width: width)
+        body += modeArt(cx: x + width - 76, cy: y + 78)
 
-        let heroTop = y + 236
-        body += rect(x: x, y: heroTop, width: width, height: 230, stroke: 0, fill: "#000")
-        body += text("当前任务", x: x + 30, y: heroTop + 56, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(model.metrics.first?.value ?? "等待任务", x: x + 30, y: heroTop + 132, width: width - 60, size: 54, maxLines: 2, fill: "#fff")
-
-        body += metricStrip(x: x, y: y + 520, width: width, metrics: Array(model.metrics.dropFirst().prefix(2)))
-        body += workList(x: x, y: y + 740, width: width, bottom: bottom, title: "专注规则", rows: model.notes)
+        body += text("当前任务", x: x, y: y + 270, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
+        body += wrapped(model.metrics.first?.value ?? "等待任务", x: x, y: y + 382, width: width, size: 80, maxLines: 3)
+        body += line(x1: x, y1: y + 690, x2: x + width, y2: y + 690, stroke: 4)
+        body += text("建议专注块", x: x, y: y + 790, size: 29, weight: "700", family: "Menlo, Monaco, monospace")
+        body += centeredText(metricValue("建议专注", fallback: "50 分钟"), centerX: x + width / 2, y: y + 930, size: 130, weight: "700")
+        body += emphasisBand(label: "执行原则", value: "完成当前任务，再切换", x: x, y: y + 1030, width: width, height: 180, valueSize: 50)
         return body
     }
 
     private func systemContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += text("系统", x: x, y: y + 104, size: 122, weight: "700")
-        body += text(model.subhead, x: x + 4, y: y + 164, size: 30, weight: "400", family: "Menlo, Monaco, monospace")
-        body += modeArt(cx: x + width - 82, cy: y + 86)
+        body += pageHeading("系统", subtitle: "Mac 健康", x: x, y: y, width: width)
+        body += modeArt(cx: x + width - 76, cy: y + 78)
 
-        let heroTop = y + 236
-        body += rect(x: x, y: heroTop, width: width, height: 212, stroke: 0, fill: "#000")
-        body += text("资源压力", x: x + 30, y: heroTop + 52, size: 28, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
-        body += wrapped(model.metrics.first?.value ?? "不可用", x: x + 30, y: heroTop + 122, width: width - 60, size: 48, maxLines: 2, fill: "#fff")
-
-        body += metricStrip(x: x, y: y + 500, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)))
-        body += workList(x: x, y: y + 720, width: width, bottom: bottom, title: "高占用进程", rows: model.notes)
+        body += emphasisBand(label: "状态", value: model.metrics.first?.value ?? "不可用", x: x, y: y + 205, width: width, height: 210, valueSize: 66, maxLines: 2)
+        let systemMetrics = model.metrics.dropFirst().prefix(3).map { metric in
+            Metric(label: metric.label, value: compactSystemValue(metric), emphasis: metric.emphasis)
+        }
+        body += summaryStrip(x: x, y: y + 485, width: width, metrics: systemMetrics, height: 240)
+        body += simpleList(x: x, y: y + 805, width: width, bottom: bottom, title: "占用较高", rows: Array(model.notes.prefix(4)), rowHeight: 100, valueSize: 40)
         return body
     }
 
     private func screensaverContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += centeredText(model.headline, centerX: x + width / 2, y: y + 344, size: 190, weight: "700", family: "Georgia, serif")
-        body += centeredText(model.subhead, centerX: x + width / 2, y: y + 416, size: 38, weight: "400")
-        body += line(x1: x + 110, y1: y + 508, x2: x + width - 110, y2: y + 508, stroke: 5)
-        body += centeredText("离开时保持安静显示", centerX: x + width / 2, y: y + 586, size: 44, weight: "700")
-        body += centeredText("回到 Mac 顶栏即可切换内容", centerX: x + width / 2, y: y + 650, size: 34, weight: "400")
-        body += workList(x: x, y: y + 808, width: width, bottom: bottom, title: "状态", rows: model.notes)
+        body += centeredText(model.headline, centerX: x + width / 2, y: y + 500, size: 242, weight: "700", family: "Georgia, serif")
+        body += centeredText(model.subhead, centerX: x + width / 2, y: y + 594, size: 48, weight: "400")
+        body += line(x1: x + 180, y1: y + 700, x2: x + width - 180, y2: y + 700, stroke: 4)
+        if !model.footerRight.isEmpty && !model.footerRight.contains("--") {
+            body += centeredText(model.footerRight, centerX: x + width / 2, y: y + 790, size: 34, weight: "400", family: "Menlo, Monaco, monospace")
+        }
+        return body
+    }
+
+    private func pageHeading(_ title: String, subtitle: String, x: Int, y: Int, width: Int) -> String {
+        var body = ""
+        body += text(title, x: x, y: y + 94, size: 88, weight: "700")
+        if !subtitle.isEmpty {
+            body += text(subtitle, x: x + 2, y: y + 148, size: 30, weight: "400", family: "Menlo, Monaco, monospace")
+        }
+        return body
+    }
+
+    private func metricValue(_ label: String, fallback: String) -> String {
+        model.metrics.first(where: { $0.label == label })?.value ?? fallback
+    }
+
+    private func semanticWeather(
+        _ value: String,
+        x: Int,
+        y: Int,
+        width: Int,
+        primarySize: Int,
+        secondarySize: Int
+    ) -> String {
+        let parts = value
+            .components(separatedBy: "，")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard parts.count >= 2 else {
+            return wrapped(value, x: x, y: y, width: width, size: primarySize, maxLines: 2)
+        }
+        var body = wrapped(parts[0], x: x, y: y, width: width, size: primarySize, maxLines: 1)
+        body += wrapped(parts.dropFirst().joined(separator: "，"), x: x, y: y + primarySize + 20, width: width, size: secondarySize, maxLines: 1)
+        return body
+    }
+
+    private func monthTitle(_ date: Date) -> String {
+        let month = Calendar.current.component(.month, from: date)
+        return "\(month)月"
+    }
+
+    private func calendarYear(_ date: Date) -> String {
+        "\(Calendar.current.component(.year, from: date))"
+    }
+
+    private func lunarDateText(_ date: Date) -> String {
+        let lunar = Calendar(identifier: .chinese)
+        let components = lunar.dateComponents([.month, .day], from: date)
+        let months = ["正月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "冬月", "腊月"]
+        let days = [
+            "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
+            "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+            "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"
+        ]
+        let monthIndex = max(1, min(12, components.month ?? 1)) - 1
+        let dayIndex = max(1, min(30, components.day ?? 1)) - 1
+        return "农历\(months[monthIndex])\(days[dayIndex])"
+    }
+
+    private func monthCalendarGrid(date: Date, x: Int, y: Int, width: Int) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = .current
+        calendar.firstWeekday = 2
+        guard let interval = calendar.dateInterval(of: .month, for: date),
+              let days = calendar.range(of: .day, in: .month, for: date) else {
+            return ""
+        }
+
+        let columnWidth = width / 7
+        let weekdays = ["一", "二", "三", "四", "五", "六", "日"]
+        var body = ""
+        for (index, weekday) in weekdays.enumerated() {
+            body += centeredText(weekday, centerX: x + columnWidth * index + columnWidth / 2, y: y + 42, size: 27, weight: "700", family: "Menlo, Monaco, monospace")
+        }
+        body += line(x1: x, y1: y + 66, x2: x + width, y2: y + 66, stroke: 2)
+
+        let firstWeekday = calendar.component(.weekday, from: interval.start)
+        let leadingDays = (firstWeekday - calendar.firstWeekday + 7) % 7
+        let todayComponents = calendar.dateComponents([.year, .month, .day], from: date)
+        let rowHeight = 78
+
+        for day in days {
+            let position = leadingDays + day - 1
+            let column = position % 7
+            let row = position / 7
+            let centerX = x + column * columnWidth + columnWidth / 2
+            let baseline = y + 126 + row * rowHeight
+            let isToday = todayComponents.day == day
+                && todayComponents.month == calendar.component(.month, from: interval.start)
+                && todayComponents.year == calendar.component(.year, from: interval.start)
+            if isToday {
+                body += rect(x: centerX - 34, y: baseline - 48, width: 68, height: 62, stroke: 0, fill: "#111")
+                body += centeredText("\(day)", centerX: centerX, y: baseline, size: 42, weight: "700", fill: "#fff")
+            } else {
+                body += centeredText("\(day)", centerX: centerX, y: baseline, size: 42, weight: "700")
+            }
+        }
+        return body
+    }
+
+    private func compactSystemValue(_ metric: Metric) -> String {
+        if metric.label == "内存" {
+            return metric.value.components(separatedBy: " | ").first ?? metric.value
+        }
+        if metric.label == "磁盘" {
+            return metric.value.components(separatedBy: " / ").first ?? metric.value
+        }
+        return metric.value
+    }
+
+    private func emphasisBand(
+        label: String,
+        value: String,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        valueSize: Int,
+        maxLines: Int = 2
+    ) -> String {
+        var body = rect(x: x, y: y, width: width, height: height, stroke: 0, fill: "#111")
+        body += text(label, x: x + 32, y: y + 48, size: 27, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
+        body += wrapped(value, x: x + 32, y: y + 112, width: width - 64, size: valueSize, maxLines: maxLines, fill: "#fff")
+        return body
+    }
+
+    private func summaryStrip(x: Int, y: Int, width: Int, metrics: [Metric], height: Int) -> String {
+        let visible = Array(metrics.prefix(3))
+        guard !visible.isEmpty else { return "" }
+        let columnWidth = width / visible.count
+        var body = line(x1: x, y1: y, x2: x + width, y2: y, stroke: 3)
+        body += line(x1: x, y1: y + height, x2: x + width, y2: y + height, stroke: 3)
+
+        for (index, metric) in visible.enumerated() {
+            let columnX = x + index * columnWidth
+            if index > 0 {
+                body += line(x1: columnX, y1: y + 26, x2: columnX, y2: y + height - 26, stroke: 2)
+            }
+            body += text(metric.label, x: columnX + 24, y: y + 58, size: 27, weight: "700", family: "Menlo, Monaco, monospace")
+            body += wrapped(metric.value, x: columnX + 24, y: y + 126, width: columnWidth - 48, size: 42, maxLines: 2)
+        }
+        return body
+    }
+
+    private func compactMetricStrip(x: Int, y: Int, width: Int, metrics: [Metric], height: Int) -> String {
+        let visible = Array(metrics.prefix(3))
+        guard !visible.isEmpty else { return "" }
+        let columnWidth = width / visible.count
+        var body = ""
+        for (index, metric) in visible.enumerated() {
+            let columnX = x + index * columnWidth
+            if index > 0 {
+                body += line(x1: columnX, y1: y + 18, x2: columnX, y2: y + height - 18, stroke: 2)
+            }
+            body += text(metric.label, x: columnX + 20, y: y + 54, size: 24, weight: "700", family: "Menlo, Monaco, monospace")
+            body += wrapped(metric.value, x: columnX + 20, y: y + 118, width: columnWidth - 36, size: 36, maxLines: 1)
+        }
+        return body
+    }
+
+    private func weatherTimeline(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = text("接下来", x: x, y: y + 42, size: 29, weight: "700", family: "Menlo, Monaco, monospace")
+        body += line(x1: x, y1: y + 64, x2: x + width, y2: y + 64, stroke: 3)
+        let hours = Array(model.weatherHours.prefix(5))
+        guard !hours.isEmpty else {
+            body += centeredText("未来几小时暂无数据", centerX: x + width / 2, y: y + 190, size: 46, weight: "700")
+            return body
+        }
+
+        let rowHeight = min(112, max(94, (bottom - y - 70) / hours.count))
+        for (index, hour) in hours.enumerated() {
+            let rowTop = y + 64 + index * rowHeight
+            let baseline = rowTop + Int(Double(rowHeight) * 0.68)
+            if index > 0 {
+                body += line(x1: x, y1: rowTop, x2: x + width, y2: rowTop, stroke: 1)
+            }
+            body += text(hour.time, x: x, y: baseline, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
+            body += weatherIcon(condition: hour.condition, cx: x + 250, cy: rowTop + rowHeight / 2, size: 62)
+            body += text("\(hour.condition.label) \(hour.temperature)", x: x + 306, y: baseline, size: 39, weight: "700")
+            let rainText = hour.rainChance == 0 && !hour.condition.isRain ? "无雨" : "降水 \(hour.rainChance)%"
+            body += rightText(rainText, rightX: x + width, y: baseline, size: 31, weight: "700", family: "Menlo, Monaco, monospace")
+        }
+        return body
+    }
+
+    private func simpleList(
+        x: Int,
+        y: Int,
+        width: Int,
+        bottom: Int,
+        title: String,
+        rows: [String],
+        rowHeight: Int,
+        valueSize: Int
+    ) -> String {
+        var body = ""
+        body += text(title, x: x, y: y + 40, size: 29, weight: "700", family: "Menlo, Monaco, monospace")
+        body += line(x1: x, y1: y + 62, x2: x + width, y2: y + 62, stroke: 3)
+        let capacity = max(1, (bottom - y - 70) / rowHeight)
+
+        for (index, note) in rows.prefix(capacity).enumerated() {
+            let row = splitRow(note)
+            let rowTop = y + 62 + index * rowHeight
+            let baseline = rowTop + Int(Double(rowHeight) * 0.66)
+            if index > 0 {
+                body += line(x1: x, y1: rowTop, x2: x + width, y2: rowTop, stroke: 1)
+            }
+            let rightWidth = row.right.isEmpty ? 0 : min(300, max(150, row.right.count * 22))
+            body += wrapped(row.left, x: x, y: baseline, width: width - rightWidth - 24, size: valueSize, maxLines: 1)
+            if !row.right.isEmpty {
+                body += rightText(row.right, rightX: x + width, y: baseline, size: max(28, valueSize - 8), weight: "700", family: "Menlo, Monaco, monospace")
+            }
+        }
+        return body
+    }
+
+    private func readableDocument(x: Int, y: Int, width: Int, bottom: Int, rows: [String]) -> String {
+        let rowHeight = 116
+        let capacity = max(1, (bottom - y) / rowHeight)
+        var body = ""
+
+        for (index, note) in rows.prefix(capacity).enumerated() {
+            let row = splitRow(note)
+            let rowTop = y + index * rowHeight
+            let isHeading = row.right == "标题"
+            if index > 0 {
+                body += line(x1: x, y1: rowTop, x2: x + width, y2: rowTop, stroke: 1)
+            }
+            body += wrapped(row.left, x: x, y: rowTop + 72, width: width, size: isHeading ? 52 : 44, maxLines: 1)
+        }
         return body
     }
 
     private var homeAdvice: String {
         let values = model.metrics.map(\.value).joined(separator: " ")
+        if values.contains("天气源暂不可用") {
+            return "天气稍后更新，先推进项目"
+        }
         if values.contains("无日程") || values.contains("暂无日程") {
             return "先看天气，再推进项目"
         }
@@ -1844,103 +2521,10 @@ struct SVGRenderer {
         return "出门前看温度和风"
     }
 
-    private func metricStrip(x: Int, y: Int, width: Int, metrics: [Metric]) -> String {
-        guard !metrics.isEmpty else { return "" }
-        let gap = 18
-        let count = min(3, metrics.count)
-        let cardWidth = (width - gap * (count - 1)) / count
-        return metrics.prefix(count).enumerated().map { index, metric in
-            let cx = x + index * (cardWidth + gap)
-            return """
-            <rect x="\(cx)" y="\(y)" width="\(cardWidth)" height="172" fill="#fff" stroke="#000" stroke-width="4"/>
-            \(text(metric.label, x: cx + 24, y: y + 50, size: 26, weight: "700", family: "Menlo, Monaco, monospace"))
-            \(wrapped(metric.value, x: cx + 24, y: y + 108, width: cardWidth - 48, size: 33, maxLines: 2))
-            """
-        }.joined()
-    }
-
-    private func workList(x: Int, y: Int, width: Int, bottom: Int, title: String, rows: [String]) -> String {
-        var body = ""
-        body += line(x1: x, y1: y, x2: x + width, y2: y, stroke: 4)
-        body += text(title, x: x, y: y + 48, size: 31, weight: "700", family: "Menlo, Monaco, monospace")
-        let rowHeight = 70
-        let firstBaseline = y + 110
-        var rowY = firstBaseline
-        while rowY < bottom - 10 {
-            body += line(x1: x, y1: rowY - 34, x2: x + width, y2: rowY - 34, stroke: 2)
-            rowY += rowHeight
-        }
-        let capacity = max(1, (bottom - y - 88) / rowHeight)
-        for (index, note) in rows.prefix(capacity).enumerated() {
-            let row = splitRow(note)
-            let baseline = firstBaseline + index * rowHeight
-            body += wrapped(row.left, x: x, y: baseline, width: width - 276, size: 34, maxLines: 1)
-            body += rightText(row.right, rightX: x + width, y: baseline, size: 28, weight: "700", family: "Menlo, Monaco, monospace")
-        }
-        return body
-    }
-
-    private func documentList(x: Int, y: Int, width: Int, bottom: Int, rows: [String]) -> String {
-        var body = ""
-        body += line(x1: x, y1: y, x2: x + width, y2: y, stroke: 4)
-        body += text("文档内容", x: x, y: y + 48, size: 31, weight: "700", family: "Menlo, Monaco, monospace")
-        let firstBaseline = y + 110
-        let rowHeight = 66
-        let capacity = max(1, (bottom - y - 78) / rowHeight)
-
-        var lineY = firstBaseline - 36
-        while lineY < bottom - 10 {
-            body += line(x1: x, y1: lineY, x2: x + width, y2: lineY, stroke: 2)
-            lineY += rowHeight
-        }
-
-        for (index, note) in rows.prefix(capacity).enumerated() {
-            let row = splitRow(note)
-            let baseline = firstBaseline + index * rowHeight
-            if row.right == "标题" {
-                body += wrapped(row.left, x: x, y: baseline, width: width - 110, size: 35, maxLines: 1)
-            } else {
-                body += wrapped(row.left, x: x, y: baseline, width: width - 172, size: 32, maxLines: 1)
-                body += rightText(row.right, rightX: x + width, y: baseline, size: 24, weight: "700", family: "Menlo, Monaco, monospace")
-            }
-        }
-        return body
-    }
-
-    private func musicButtonRow(x: Int, y: Int, width: Int) -> String {
-        let gap = 22
-        let buttonWidth = (width - gap * 2) / 3
-        let labels = [("上一首", "PREV", false), ("播放/暂停", "PLAY", true), ("下一首", "NEXT", false)]
-        return labels.enumerated().map { index, item in
-            let bx = x + index * (buttonWidth + gap)
-            let fill = item.2 ? "#000" : "#fff"
-            let ink = item.2 ? "#fff" : "#000"
-            return """
-            <rect x="\(bx)" y="\(y)" width="\(buttonWidth)" height="128" fill="\(fill)" stroke="#000" stroke-width="5"/>
-            <text x="\(bx + buttonWidth / 2)" y="\(y + 50)" text-anchor="middle" font-family="Menlo, Monaco, monospace" font-size="23" font-weight="700" fill="\(ink)">\(item.1)</text>
-            <text x="\(bx + buttonWidth / 2)" y="\(y + 96)" text-anchor="middle" font-family="Georgia, serif" font-size="35" font-weight="700" fill="\(ink)">\(item.0)</text>
-            """
-        }.joined()
-    }
-
-    private var titleSize: Int {
-        switch model.mode {
-        case .screensaver, .home: return 112
-        case .music: return 86
-        default: return 94
-        }
-    }
-
     private func modeArt(cx: Int, cy: Int) -> String {
         switch model.mode {
         case .weather, .home:
-            return """
-            <circle cx="\(cx)" cy="\(cy)" r="34" fill="#fff" stroke="#000" stroke-width="6"/>
-            <line x1="\(cx)" y1="\(cy - 62)" x2="\(cx)" y2="\(cy - 48)" stroke="#000" stroke-width="5"/>
-            <line x1="\(cx - 62)" y1="\(cy)" x2="\(cx - 48)" y2="\(cy)" stroke="#000" stroke-width="5"/>
-            <line x1="\(cx + 48)" y1="\(cy)" x2="\(cx + 62)" y2="\(cy)" stroke="#000" stroke-width="5"/>
-            <path d="M \(cx - 26) \(cy + 50) C \(cx + 4) \(cy + 24), \(cx + 54) \(cy + 30), \(cx + 70) \(cy + 52)" fill="none" stroke="#000" stroke-width="6"/>
-            """
+            return weatherIcon(condition: model.weatherCondition ?? .unknown, cx: cx, cy: cy, size: 126)
         case .music:
             return """
             <circle cx="\(cx - 26)" cy="\(cy + 34)" r="20" fill="#fff" stroke="#000" stroke-width="6"/>
@@ -1972,6 +2556,67 @@ struct SVGRenderer {
         }
     }
 
+    private func weatherIcon(condition: WeatherCondition, cx: Int, cy: Int, size: Int) -> String {
+        let scale = Double(size) / 148.0
+        let stroke = max(2, Int((6 * scale).rounded()))
+        func px(_ value: Double) -> Int { cx + Int((value * scale).rounded()) }
+        func py(_ value: Double) -> Int { cy + Int((value * scale).rounded()) }
+        func line(_ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double, width: Int? = nil) -> String {
+            "<line x1=\"\(px(x1))\" y1=\"\(py(y1))\" x2=\"\(px(x2))\" y2=\"\(py(y2))\" stroke=\"#000\" stroke-width=\"\(width ?? stroke)\" stroke-linecap=\"round\"/>"
+        }
+        func circle(_ x: Double, _ y: Double, _ radius: Double) -> String {
+            "<circle cx=\"\(px(x))\" cy=\"\(py(y))\" r=\"\(max(2, Int((radius * scale).rounded())))\" fill=\"#fff\" stroke=\"#000\" stroke-width=\"\(stroke)\"/>"
+        }
+        func cloud(_ dx: Double = 0, _ dy: Double = 0) -> String {
+            "<path d=\"M \(px(-50 + dx)) \(py(18 + dy)) C \(px(-50 + dx)) \(py(2 + dy)) \(px(-38 + dx)) \(py(-10 + dy)) \(px(-21 + dx)) \(py(-10 + dy)) C \(px(-13 + dx)) \(py(-34 + dy)) \(px(20 + dx)) \(py(-38 + dy)) \(px(34 + dx)) \(py(-15 + dy)) C \(px(54 + dx)) \(py(-15 + dy)) \(px(66 + dx)) \(py(0 + dy)) \(px(66 + dx)) \(py(18 + dy)) C \(px(66 + dx)) \(py(34 + dy)) \(px(53 + dx)) \(py(42 + dy)) \(px(34 + dx)) \(py(42 + dy)) H \(px(-28 + dx)) C \(px(-42 + dx)) \(py(42 + dy)) \(px(-50 + dx)) \(py(32 + dy)) \(px(-50 + dx)) \(py(18 + dy)) Z\" fill=\"#fff\" stroke=\"#000\" stroke-width=\"\(stroke)\" stroke-linejoin=\"round\"/>"
+        }
+        func sun(_ x: Double = 0, _ y: Double = 0, radius: Double = 23) -> String {
+            var body = circle(x, y, radius)
+            let inner = radius + 13
+            let outer = radius + 23
+            let diagonal = 0.707
+            body += line(x, y - outer, x, y - inner) + line(x, y + inner, x, y + outer)
+            body += line(x - outer, y, x - inner, y) + line(x + inner, y, x + outer, y)
+            body += line(x - outer * diagonal, y - outer * diagonal, x - inner * diagonal, y - inner * diagonal)
+            body += line(x + inner * diagonal, y + inner * diagonal, x + outer * diagonal, y + outer * diagonal)
+            body += line(x + outer * diagonal, y - outer * diagonal, x + inner * diagonal, y - inner * diagonal)
+            body += line(x - inner * diagonal, y + inner * diagonal, x - outer * diagonal, y + outer * diagonal)
+            return body
+        }
+        func rain(_ positions: [Double], length: Double) -> String {
+            positions.map { line($0, 52, $0 - length * 0.35, 52 + length, width: max(stroke, Int((7 * scale).rounded()))) }.joined()
+        }
+
+        let content: String
+        switch condition {
+        case .clear:
+            content = sun()
+        case .partlyCloudy:
+            content = sun(-26, -25, radius: 18) + cloud(5, 8)
+        case .cloudy:
+            content = cloud()
+        case .overcast:
+            content = cloud(-12, -16) + cloud(8, 10)
+        case .lightRain:
+            content = cloud() + rain([-24, 22], length: 18)
+        case .moderateRain:
+            content = cloud() + rain([-32, 2, 36], length: 25)
+        case .heavyRain:
+            content = cloud() + rain([-46, -22, 2, 26, 50], length: 32)
+        case .thunder:
+            content = cloud() + "<polyline points=\"\(px(8)),\(py(45)) \(px(-8)),\(py(68)) \(px(8)),\(py(68)) \(px(-6)),\(py(92))\" fill=\"none\" stroke=\"#000\" stroke-width=\"\(max(stroke, Int((8 * scale).rounded())))\" stroke-linejoin=\"round\"/>" + rain([-32, 34], length: 18)
+        case .snow:
+            content = cloud() + line(-28, 54, -28, 76) + line(-39, 65, -17, 65) + line(25, 54, 25, 76) + line(14, 65, 36, 65)
+        case .fog:
+            content = cloud() + line(-48, 57, 50, 57) + line(-38, 76, 38, 76)
+        case .wind:
+            content = "<path d=\"M \(px(-56)) \(py(-22)) C \(px(-20)) \(py(-22)) \(px(-12)) \(py(-40)) \(px(8)) \(py(-40)) C \(px(27)) \(py(-40)) \(px(32)) \(py(-18)) \(px(18)) \(py(-10))\" fill=\"none\" stroke=\"#000\" stroke-width=\"\(stroke)\" stroke-linecap=\"round\"/><path d=\"M \(px(-58)) \(py(4)) H \(px(34)) C \(px(58)) \(py(4)) \(px(58)) \(py(34)) \(px(36)) \(py(34)) C \(px(25)) \(py(34)) \(px(19)) \(py(28)) \(px(18)) \(py(20))\" fill=\"none\" stroke=\"#000\" stroke-width=\"\(stroke)\" stroke-linecap=\"round\"/>" + line(-46, 30, -4, 30)
+        case .unknown:
+            content = cloud()
+        }
+        return content
+    }
+
     private func imageIcon(cx: Int, cy: Int) -> String {
         """
         <rect x="\(cx - 58)" y="\(cy - 48)" width="116" height="96" fill="#fff" stroke="#000" stroke-width="7"/>
@@ -1990,113 +2635,12 @@ struct SVGRenderer {
         """
     }
 
-    private func widgetRail(x: Int, y: Int, width: Int, height: Int) -> String {
-        let gap = 16
-        let itemWidth = (width - gap * 3) / 4
-        let widgets = bottomWidgets()
-        return widgets.enumerated().map { index, widget in
-            let ix = x + index * (itemWidth + gap)
-            let active = widget.title == activeWidgetTitle
-            let fill = active ? "#000" : "#fff"
-            let ink = active ? "#fff" : "#000"
-            let stroke = active ? 0 : 4
-            return """
-            <rect x="\(ix)" y="\(y)" width="\(itemWidth)" height="\(height)" fill="\(fill)" stroke="#000" stroke-width="\(stroke)"/>
-            \(widget.icon(ix + 24, y + 30, ink))
-            <text x="\(ix + 82)" y="\(y + 58)" font-family="Menlo, Monaco, monospace" font-size="25" font-weight="700" fill="\(ink)">\(escape(widget.title))</text>
-            <text x="\(ix + 26)" y="\(y + 126)" font-family="Georgia, serif" font-size="34" font-weight="700" fill="\(ink)">\(escape(widget.value))</text>
-            """
-        }.joined()
-    }
-
-    private struct BottomWidget {
-        let title: String
-        let value: String
-        let icon: (Int, Int, String) -> String
-    }
-
-    private var activeWidgetTitle: String {
-        switch model.mode {
-        case .home: return "时间"
-        case .weather: return "天气"
-        case .music: return "音乐"
-        case .calendar: return "日历"
-        case .screensaver: return "时间"
-        default: return ""
-        }
-    }
-
-    private func bottomWidgets() -> [BottomWidget] {
-        [
-            BottomWidget(title: "天气", value: shortWeather(), icon: sunIcon),
-            BottomWidget(title: "时间", value: DashboardData.clockTime(), icon: clockIcon),
-            BottomWidget(title: "音乐", value: shortMusic(), icon: musicIcon),
-            BottomWidget(title: "日历", value: shortCalendar(), icon: calendarIcon)
-        ]
-    }
-
-    private func shortWeather() -> String {
-        if let currentWeather = model.metrics.first(where: { $0.label == "天气" || $0.label == "室外" || $0.label == "现在" })?.value,
-           let temp = firstTemperature(in: currentWeather) {
-            return temp
-        }
-        let value = CommandRunner.shell("curl -m 2 -s 'https://wttr.in/?format=%t' 2>/dev/null || true")
-        return value.isEmpty ? "--" : value
-    }
-
-    private func firstTemperature(in value: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: #"[+-]\d+°C"#),
-              let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
-              let range = Range(match.range, in: value) else {
-            return nil
-        }
-        return String(value[range])
-    }
-
-    private func shortMusic() -> String {
-        let value = CommandRunner.appleScript("""
-        tell application "Music"
-          if it is running then
-            if player state is playing then
-              return name of current track
-            else
-              return "暂停"
-            end if
-          else
-            return "未播放"
-          end if
-        end tell
-        """)
-        return value.isEmpty ? "未播放" : String(value.prefix(8))
-    }
-
-    private func shortCalendar() -> String {
-        let value = CommandRunner.shell("command -v icalBuddy >/dev/null && icalBuddy -nc -nrd -ea -li 1 eventsToday 2>/dev/null | head -1 || true")
-        return value.isEmpty ? "无日程" : String(value.prefix(8))
-    }
-
-    private func sunIcon(x: Int, y: Int, ink: String) -> String {
-        "<circle cx=\"\(x + 20)\" cy=\"\(y + 20)\" r=\"18\" fill=\"none\" stroke=\"\(ink)\" stroke-width=\"4\"/>"
-    }
-
-    private func clockIcon(x: Int, y: Int, ink: String) -> String {
-        "<circle cx=\"\(x + 20)\" cy=\"\(y + 20)\" r=\"20\" fill=\"none\" stroke=\"\(ink)\" stroke-width=\"4\"/><line x1=\"\(x + 20)\" y1=\"\(y + 20)\" x2=\"\(x + 20)\" y2=\"\(y + 8)\" stroke=\"\(ink)\" stroke-width=\"3\"/><line x1=\"\(x + 20)\" y1=\"\(y + 20)\" x2=\"\(x + 31)\" y2=\"\(y + 20)\" stroke=\"\(ink)\" stroke-width=\"3\"/>"
-    }
-
-    private func musicIcon(x: Int, y: Int, ink: String) -> String {
-        "<circle cx=\"\(x + 14)\" cy=\"\(y + 34)\" r=\"10\" fill=\"none\" stroke=\"\(ink)\" stroke-width=\"4\"/><line x1=\"\(x + 24)\" y1=\"\(y + 32)\" x2=\"\(x + 24)\" y2=\"\(y + 4)\" stroke=\"\(ink)\" stroke-width=\"5\"/>"
-    }
-
-    private func calendarIcon(x: Int, y: Int, ink: String) -> String {
-        "<rect x=\"\(x)\" y=\"\(y + 4)\" width=\"42\" height=\"36\" fill=\"none\" stroke=\"\(ink)\" stroke-width=\"4\"/><line x1=\"\(x)\" y1=\"\(y + 16)\" x2=\"\(x + 42)\" y2=\"\(y + 16)\" stroke=\"\(ink)\" stroke-width=\"3\"/>"
-    }
-
     private func wrapped(_ value: String, x: Int, y: Int, width: Int, size: Int, maxLines: Int) -> String {
         wrapped(value, x: x, y: y, width: width, size: size, maxLines: maxLines, fill: "#000")
     }
 
     private func wrapped(_ value: String, x: Int, y: Int, width: Int, size: Int, maxLines: Int, fill: String) -> String {
-        let charWidth = containsWideGlyphs(value) ? Double(size) * 0.92 : Double(size) * 0.55
+        let charWidth = containsWideGlyphs(value) ? Double(size) * 1.04 : Double(size) * 0.57
         let maxChars = max(6, width / max(12, Int(charWidth)))
         var lines: [String] = []
         for segment in value.components(separatedBy: "\n") {
@@ -2109,44 +2653,37 @@ struct SVGRenderer {
     }
 
     private func wrap(_ value: String, maxChars: Int, maxLines: Int) -> [String] {
+        let breakCharacters: Set<Character> = ["，", "。", "；", "：", "、", "！", "？", ",", ".", ";", ":", "!", "?", "/", "｜", "|"]
+        var remaining = Array(value.trimmingCharacters(in: .whitespacesAndNewlines))
         var result: [String] = []
-        var current = ""
 
-        func flush() {
-            if !current.isEmpty, result.count < maxLines {
-                result.append(current)
-                current = ""
-            }
-        }
-
-        for token in value.split(separator: " ", omittingEmptySubsequences: false).map(String.init) {
-            if token.count > maxChars {
-                flush()
-                var remaining = token
-                while !remaining.isEmpty, result.count < maxLines {
-                    result.append(String(remaining.prefix(maxChars)))
-                    remaining = String(remaining.dropFirst(maxChars))
+        while !remaining.isEmpty, result.count < maxLines {
+            let limit = min(maxChars, remaining.count)
+            var cut = limit
+            if remaining.count > maxChars {
+                let earliestPreferredBreak = max(1, Int(Double(maxChars) * 0.55))
+                for index in stride(from: limit - 1, through: earliestPreferredBreak - 1, by: -1) {
+                    if breakCharacters.contains(remaining[index]) || remaining[index].isWhitespace {
+                        cut = index + 1
+                        break
+                    }
                 }
-                continue
             }
-            let next = current.isEmpty ? token : "\(current) \(token)"
-            if next.count > maxChars {
-                flush()
-                current = token
-            } else {
-                current = next
-            }
-            if result.count == maxLines { break }
-        }
-        flush()
 
-        if result.isEmpty {
-            result = [String(value.prefix(maxChars))]
+            let line = String(remaining.prefix(cut)).trimmingCharacters(in: .whitespacesAndNewlines)
+            remaining.removeFirst(cut)
+            while remaining.first?.isWhitespace == true {
+                remaining.removeFirst()
+            }
+            if !line.isEmpty {
+                result.append(line)
+            }
         }
-        if value.count > result.joined(separator: " ").count, !result.isEmpty {
-            result[result.count - 1] = String(result[result.count - 1].prefix(max(1, maxChars - 3))) + "..."
+
+        if !remaining.isEmpty, !result.isEmpty {
+            result[result.count - 1] = String(result[result.count - 1].prefix(max(1, maxChars - 1))) + "…"
         }
-        return Array(result.prefix(maxLines))
+        return result.isEmpty ? [String(value.prefix(maxChars))] : result
     }
 
     private func containsWideGlyphs(_ value: String) -> Bool {
@@ -2928,6 +3465,13 @@ if CommandLine.arguments.contains("--dump-codex-svg") {
     state.setMode(.codex)
     let model = DashboardData.make(snapshot: state.snapshot())
     print(SVGRenderer(model: model).svg())
+    exit(0)
+}
+
+if let previewIndex = CommandLine.arguments.firstIndex(of: "--dump-preview"),
+   CommandLine.arguments.indices.contains(previewIndex + 1),
+   let mode = KindleMode(rawValue: CommandLine.arguments[previewIndex + 1]) {
+    print(SVGRenderer(model: DashboardData.preview(mode: mode)).svg())
     exit(0)
 }
 

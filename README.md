@@ -17,6 +17,22 @@ Made by **ShaneStudio**
 
 ![KindleDashboard home preview](docs/assets/previews/home.png)
 
+## 新版截图
+
+所有截图均由固定示例数据渲染，展示的是 Kindle Paperwhite 3 的实际画布比例，不包含真实日历、Codex 任务或本机状态。
+
+**总览与天气**：一眼判断当前天气、下一段降雨窗口、出门建议、Codex 额度和 Mac 健康。
+
+![总览与天气](docs/assets/previews/daily-dashboard.png)
+
+**工作流信息牌**：把当前 Codex 工作、专注块和 Mac 系统压力放在独立页面，远看也能读清重点。
+
+![Codex、专注与系统](docs/assets/previews/workboard-flow.png)
+
+**桌面陪伴页面**：日历、音乐和低打扰屏保可在 Mac 顶栏随时切换。
+
+![日历、音乐与屏保](docs/assets/previews/desk-companion.png)
+
 ## 项目定位
 
 KindleDashboard 不是传统意义上的第二显示器。它把 Kindle 当成一块低频、低功耗、强可读性的电子墨水状态屏：
@@ -494,10 +510,17 @@ swift run KindleDashboard
 
 ### 生成预览图
 
+公开预览使用固定示例数据，不会写入当前 Codex 任务、日历或本机状态：
+
 ```bash
-curl "http://127.0.0.1:8787/frame.png?mode=home" --output docs/assets/previews/home.png
-curl "http://127.0.0.1:8787/frame.png?mode=music" --output docs/assets/previews/music.png
+swift run KindleDashboard --dump-preview home > /tmp/kindledashboard-home.svg
+sips -s format png /tmp/kindledashboard-home.svg --out docs/assets/previews/home.png
+
+swift run KindleDashboard --dump-preview weather > /tmp/kindledashboard-weather.svg
+sips -s format png /tmp/kindledashboard-weather.svg --out docs/assets/previews/weather.png
 ```
+
+`--dump-mode <mode>` 会读取实时天气、Codex 和 Mac 状态，只适合本地视觉检查，不应直接用于公开仓库截图。
 
 ### 同步到 Kindle
 
