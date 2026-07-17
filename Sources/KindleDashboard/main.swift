@@ -1769,6 +1769,7 @@ struct DashboardData {
             "<<< TRANSCRIPT",
             ">>> APPROVAL REQUEST",
             "<<< APPROVAL REQUEST",
+            "<no retained transcript delta",
             "Command completed:",
             "Command failed:"
         ]
