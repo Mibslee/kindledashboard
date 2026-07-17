@@ -59,7 +59,7 @@ Server: http://$MAC_IP:8787
 Extension: $DST
 
 Next:
-1. Make sure the Mac app is running: ./start.sh
+1. Make sure KindleDashboard.app is running (./start.sh also opens the installed app)
 2. Eject Kindle: diskutil eject $KINDLE_ROOT
 3. On Kindle: KUAL -> KindleDashboard -> UI Probe
 4. Reconnect Kindle and read:

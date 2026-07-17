@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Network
+import ServiceManagement
 import UniformTypeIdentifiers
 
 enum KindleMode: String, CaseIterable, Identifiable {
@@ -527,6 +528,8 @@ struct WeatherSnapshot {
     let advice: String
     let condition: WeatherCondition
     let hourly: [HourlyWeather]
+    let updatedAt: Date
+    let isCached: Bool
 
     var hourlyRows: [String] {
         hourly.map(\.rowText)
@@ -818,12 +821,13 @@ struct DashboardData {
 
     private static func weather(_ snapshot: AppSnapshot) -> DashboardModel {
         let weather = weatherSnapshot()
+        let cacheLabel = weather.isCached ? " · 缓存" : ""
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
             generatedAt: Date(),
             headline: "天气",
-            subhead: "未来几小时 · \(clockTime()) 更新",
+            subhead: "未来几小时 · \(clockTime(weather.updatedAt)) 更新\(cacheLabel)",
             metrics: [
                 Metric(label: "现在", value: weather.current, emphasis: true),
                 Metric(label: "细节", value: weather.detail, emphasis: false),
@@ -1004,34 +1008,73 @@ struct DashboardData {
         return rows.isEmpty ? ["还没有加载 Markdown 文档 | "] : rows
     }
 
-    private static func weatherLine(includeDetail: Bool) -> String {
-        let raw = CommandRunner.shell("curl -m 3 -s 'https://wttr.in/?format=%t|%f|%h|%w' 2>/dev/null || true")
-        let parts = raw
-            .split(separator: "|", omittingEmptySubsequences: false)
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard parts.count >= 4, !parts[0].isEmpty else {
-            return ""
+    private static func weatherSnapshot() -> WeatherSnapshot {
+        let defaults = UserDefaults.standard
+        let dataKey = "KindleDashboard.WeatherData"
+        let dateKey = "KindleDashboard.WeatherDate"
+        let now = Date()
+
+        if let cachedData = defaults.data(forKey: dataKey),
+           let capturedAt = defaults.object(forKey: dateKey) as? Date,
+           now.timeIntervalSince(capturedAt) < 10 * 60,
+           let cached = decodedWeatherSnapshot(data: cachedData, updatedAt: capturedAt, isCached: false) {
+            return cached
         }
-        if includeDetail {
-            return "室外 \(parts[0])，体感 \(parts[1])，湿度 \(parts[2])\n风 \(parts[3])"
+
+        if let liveData = fetchWeatherData(),
+           let live = decodedWeatherSnapshot(data: liveData, updatedAt: now, isCached: false) {
+            defaults.set(liveData, forKey: dataKey)
+            defaults.set(now, forKey: dateKey)
+            return live
         }
-        return "室外 \(parts[0])，体感 \(parts[1])"
+
+        if let cachedData = defaults.data(forKey: dataKey),
+           let capturedAt = defaults.object(forKey: dateKey) as? Date,
+           now.timeIntervalSince(capturedAt) < 6 * 60 * 60,
+           let cached = decodedWeatherSnapshot(data: cachedData, updatedAt: capturedAt, isCached: true) {
+            return cached
+        }
+
+        return WeatherSnapshot(
+            current: "天气源暂不可用",
+            detail: "等待下次刷新",
+            rainSummary: "降雨待更新",
+            advice: "天气稍后更新，按当前计划推进",
+            condition: .unknown,
+            hourly: [],
+            updatedAt: now,
+            isCached: false
+        )
     }
 
-    private static func weatherSnapshot() -> WeatherSnapshot {
-        let raw = CommandRunner.shell("curl -m 4 -s 'https://wttr.in/?format=j1' 2>/dev/null || true")
-        guard let data = raw.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    private static func fetchWeatherData() -> Data? {
+        let url = "https://wttr.in/?format=j1"
+        let commonArguments = [
+            "--fail", "--silent", "--show-error",
+            "--connect-timeout", "3", "--max-time", "7",
+            "--retry", "1", "--retry-delay", "1"
+        ]
+        let attempts = [
+            commonArguments + [url],
+            ["--noproxy", "*"] + commonArguments + [url]
+        ]
+
+        for arguments in attempts {
+            let result = CommandRunner.runResult("/usr/bin/curl", arguments)
+            guard result.status == 0,
+                  let data = result.output.data(using: .utf8),
+                  !data.isEmpty else {
+                continue
+            }
+            return data
+        }
+        return nil
+    }
+
+    private static func decodedWeatherSnapshot(data: Data, updatedAt: Date, isCached: Bool) -> WeatherSnapshot? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let current = (root["current_condition"] as? [[String: Any]])?.first else {
-            let fallback = weatherLine(includeDetail: true)
-            return WeatherSnapshot(
-                current: fallback.isEmpty ? "天气源暂不可用" : fallback.replacingOccurrences(of: "\n", with: "，"),
-                detail: fallback.isEmpty ? "等待下次刷新" : "来自 wttr.in",
-                rainSummary: "降雨待更新",
-                advice: fallback.isEmpty ? "天气稍后更新，按当前计划推进" : "出门前看温度和风",
-                condition: .unknown,
-                hourly: []
-            )
+            return nil
         }
 
         let temp = intText(current["temp_C"]) ?? "--"
@@ -1057,7 +1100,9 @@ struct DashboardData {
             rainSummary: rainSummary,
             advice: advice,
             condition: condition,
-            hourly: hourly
+            hourly: hourly,
+            updatedAt: updatedAt,
+            isCached: isCached
         )
     }
 
@@ -1816,10 +1861,10 @@ struct DashboardData {
         return formatter.string(from: Date())
     }
 
-    static func clockTime() -> String {
+    static func clockTime(_ date: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
-        return formatter.string(from: Date())
+        return formatter.string(from: date)
     }
 
     private static func longDate() -> String {
@@ -1995,6 +2040,8 @@ struct HTMLRenderer {
 
 struct SVGRenderer {
     let model: DashboardModel
+    private let uiFont = "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
+    private let monoFont = "'SF Mono', Menlo, Monaco, monospace"
 
     func svg() -> String {
         let size = KindleOrientation.portrait.frameSize
@@ -2028,6 +2075,25 @@ struct SVGRenderer {
     private func rect(x: Int, y: Int, width: Int, height: Int, stroke: Int, fill: String) -> String {
         let strokePart = stroke > 0 ? " stroke=\"#000\" stroke-width=\"\(stroke)\"" : ""
         return "<rect x=\"\(x)\" y=\"\(y)\" width=\"\(width)\" height=\"\(height)\" fill=\"\(fill)\"\(strokePart)/>"
+    }
+
+    private func roundedRect(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        radius: Int,
+        fill: String,
+        stroke: String? = nil,
+        strokeWidth: Int = 0
+    ) -> String {
+        let strokePart: String
+        if let stroke, strokeWidth > 0 {
+            strokePart = " stroke=\"\(stroke)\" stroke-width=\"\(strokeWidth)\""
+        } else {
+            strokePart = ""
+        }
+        return "<rect x=\"\(x)\" y=\"\(y)\" width=\"\(width)\" height=\"\(height)\" rx=\"\(radius)\" fill=\"\(fill)\"\(strokePart)/>"
     }
 
     private func line(x1: Int, y1: Int, x2: Int, y2: Int, stroke: Int) -> String {
@@ -2079,42 +2145,97 @@ struct SVGRenderer {
 
     private func homeContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += pageHeading("总览", subtitle: model.subhead, x: x, y: y, width: width)
-        body += modeArt(cx: x + width - 76, cy: y + 94)
+        let weather = weatherSummary(metricValue("天气", fallback: "天气待更新，--"))
+        let task = metricValue("Codex", fallback: "等待当前任务")
+        let fiveHour = metricValue("5h", fallback: "--")
+        let weekly = metricValue("周额度", fallback: "--")
 
-        body += text("天气", x: x, y: y + 250, size: 29, weight: "700", family: "Menlo, Monaco, monospace")
-        body += rightText(metricValue("降雨", fallback: "降雨待更新"), rightX: x + width, y: y + 250, size: 31, weight: "700")
-        body += semanticWeather(metricValue("天气", fallback: "天气源暂不可用"), x: x, y: y + 342, width: width, primarySize: 70, secondarySize: 48)
-        body += text(metricValue("天气细节", fallback: ""), x: x, y: y + 492, size: 36, weight: "400")
-        body += emphasisBand(label: "现在最值得注意", value: metricValue("出门建议", fallback: "天气稍后更新"), x: x, y: y + 540, width: width, height: 150, valueSize: 48)
+        body += text(model.subhead, x: x, y: y + 40, size: 28, weight: "600", fill: "#666", family: uiFont)
+        body += text(DashboardData.clockTime(model.generatedAt), x: x - 4, y: y + 163, size: 118, weight: "700", family: uiFont)
 
-        body += line(x1: x, y1: y + 754, x2: x + width, y2: y + 754, stroke: 3)
-        body += text("CODEX", x: x, y: y + 810, size: 28, weight: "700", family: "Menlo, Monaco, monospace")
-        let quota = "5h \(metricValue("5h", fallback: "--")) · 周 \(metricValue("周额度", fallback: "--"))"
-        body += rightText(quota, rightX: x + width, y: y + 810, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
-        body += wrapped(metricValue("Codex", fallback: "等待当前任务"), x: x, y: y + 900, width: width, size: 60, maxLines: 3)
+        let weatherX = x + width - 262
+        body += roundedRect(x: weatherX, y: y + 16, width: 262, height: 168, radius: 32, fill: "#f1f1f3")
+        body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: weatherX + 70, cy: y + 92, size: 82)
+        body += centeredText(weather.temperature, centerX: weatherX + 188, y: y + 94, size: 50, weight: "700", family: uiFont)
+        body += centeredText("\(weather.condition) · \(humiditySummary())", centerX: weatherX + 188, y: y + 141, size: 23, weight: "600", fill: "#666", family: uiFont)
 
-        body += line(x1: x, y1: y + 1110, x2: x + width, y2: y + 1110, stroke: 3)
-        body += text("MAC", x: x, y: y + 1162, size: 28, weight: "700", family: "Menlo, Monaco, monospace")
-        body += wrapped(metricValue("Mac", fallback: "状态不可用"), x: x, y: y + 1232, width: 310, size: 40, maxLines: 2)
-        let macMetrics = [
-            Metric(label: "CPU", value: compactSystemValue(Metric(label: "CPU", value: metricValue("CPU", fallback: "--"), emphasis: false)), emphasis: false),
-            Metric(label: "内存", value: compactSystemValue(Metric(label: "内存", value: metricValue("内存", fallback: "--"), emphasis: false)), emphasis: false),
-            Metric(label: "温控", value: metricValue("温控", fallback: "--"), emphasis: false)
+        body += roundedRect(x: x, y: y + 236, width: width, height: 154, radius: 30, fill: "#111")
+        body += text(metricValue("降雨", fallback: "天气提醒"), x: x + 36, y: y + 284, size: 25, weight: "650", fill: "#fff", family: uiFont)
+        body += wrapped(metricValue("出门建议", fallback: "天气稍后更新"), x: x + 36, y: y + 346, width: width - 72, size: 44, maxLines: 1, fill: "#fff", family: uiFont)
+
+        body += text("正在处理", x: x, y: y + 458, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += roundedRect(x: x, y: y + 486, width: width, height: 294, radius: 34, fill: "#f1f1f3")
+        body += roundedRect(x: x + 32, y: y + 518, width: 126, height: 46, radius: 23, fill: "#111")
+        body += "<circle cx=\"\(x + 57)\" cy=\"\(y + 541)\" r=\"6\" fill=\"#fff\"/>"
+        body += text("Codex", x: x + 76, y: y + 550, size: 22, weight: "650", fill: "#fff", family: uiFont)
+        body += wrapped(task, x: x + 32, y: y + 636, width: width - 64, size: 51, maxLines: 1, fill: "#111", family: uiFont)
+        body += "<line x1=\"\(x + 32)\" y1=\"\(y + 689)\" x2=\"\(x + width - 32)\" y2=\"\(y + 689)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
+        body += text("5 小时额度", x: x + 32, y: y + 735, size: 24, weight: "600", fill: "#666", family: uiFont)
+        body += text(fiveHour, x: x + 208, y: y + 736, size: 29, weight: "700", family: uiFont)
+        body += progressBar(x: x + 288, y: y + 717, width: 230, height: 18, value: fiveHour)
+        body += text("周额度", x: x + 582, y: y + 735, size: 24, weight: "600", fill: "#666", family: uiFont)
+        body += text(weekly, x: x + 720, y: y + 736, size: 29, weight: "700", family: uiFont)
+
+        body += text("设备状态", x: x, y: y + 848, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += roundedRect(x: x, y: y + 876, width: width, height: 292, radius: 34, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += "<circle cx=\"\(x + 40)\" cy=\"\(y + 926)\" r=\"12\" fill=\"#111\"/>"
+        body += text(metricValue("Mac", fallback: "Mac 状态不可用"), x: x + 68, y: y + 936, size: 34, weight: "680", family: uiFont)
+        body += rightText("刚刚更新", rightX: x + width - 32, y: y + 936, size: 25, weight: "600", fill: "#666", family: uiFont)
+        body += "<line x1=\"\(x + 32)\" y1=\"\(y + 976)\" x2=\"\(x + width - 32)\" y2=\"\(y + 976)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
+        let deviceMetrics = [
+            ("CPU", compactSystemValue(Metric(label: "CPU", value: metricValue("CPU", fallback: "--"), emphasis: false))),
+            ("内存", compactSystemValue(Metric(label: "内存", value: metricValue("内存", fallback: "--"), emphasis: false))),
+            ("温控", metricValue("温控", fallback: "--"))
         ]
-        body += compactMetricStrip(x: x + 350, y: y + 1126, width: width - 350, metrics: macMetrics, height: 178)
+        for (index, metric) in deviceMetrics.enumerated() {
+            let columnX = x + 32 + index * 300
+            body += text(metric.0, x: columnX, y: y + 1030, size: 23, weight: "600", fill: "#666", family: uiFont)
+            body += text(metric.1.replacingOccurrences(of: "使用 ", with: ""), x: columnX, y: y + 1082, size: 42, weight: "700", family: uiFont)
+        }
         return body
     }
 
     private func codexContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += pageHeading("Codex", subtitle: "当前工作", x: x, y: y, width: width)
+        let task = model.metrics.first?.value ?? "等待 Codex 任务"
+        let fiveHour = metricValue("5h", fallback: "--")
+        let weekly = metricValue("周额度", fallback: "--")
+        let fiveReset = noteValue("5h 重置", fallback: metricValue("重置", fallback: "--"))
+        let weeklyReset = noteValue("周重置", fallback: "--")
+        let nextStep = noteValue("下一步", fallback: "等待下一步")
+        let limitStatus = noteValue("限额状态", fallback: "状态可继续")
 
-        let heroTop = y + 196
-        body += emphasisBand(label: "正在处理", value: model.metrics.first?.value ?? "等待 Codex 任务", x: x, y: heroTop, width: width, height: 300, valueSize: 70, maxLines: 3)
+        body += text("当前工作", x: x, y: y + 36, size: 28, weight: "600", fill: "#666", family: uiFont)
+        body += text("Codex", x: x - 4, y: y + 148, size: 96, weight: "720", family: uiFont)
+        body += roundedRect(x: x + width - 176, y: y + 52, width: 176, height: 58, radius: 29, fill: "#f1f1f3")
+        body += "<circle cx=\"\(x + width - 142)\" cy=\"\(y + 81)\" r=\"8\" fill=\"#111\"/>"
+        body += text("处理中", x: x + width - 118, y: y + 91, size: 24, weight: "650", family: uiFont)
 
-        body += summaryStrip(x: x, y: y + 560, width: width, metrics: Array(model.metrics.dropFirst().prefix(3)), height: 220)
-        body += simpleList(x: x, y: y + 850, width: width, bottom: bottom, title: "状态与下一步", rows: Array(model.notes.prefix(5)), rowHeight: 88, valueSize: 39)
+        body += roundedRect(x: x, y: y + 196, width: width, height: 330, radius: 36, fill: "#111")
+        body += text("正在处理", x: x + 40, y: y + 254, size: 25, weight: "650", fill: "#bbb", family: uiFont)
+        body += wrapped(task, x: x + 40, y: y + 344, width: width - 300, size: 55, maxLines: 2, fill: "#fff", family: uiFont)
+        body += "<line x1=\"\(x + 40)\" y1=\"\(y + 460)\" x2=\"\(x + width - 40)\" y2=\"\(y + 460)\" stroke=\"#444\" stroke-width=\"2\"/>"
+        body += text(limitStatus, x: x + 40, y: y + 500, size: 23, weight: "600", fill: "#bbb", family: uiFont)
+
+        body += text("额度", x: x, y: y + 600, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += roundedRect(x: x, y: y + 628, width: width, height: 262, radius: 34, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+        let half = width / 2
+        body += "<line x1=\"\(x + half)\" y1=\"\(y + 664)\" x2=\"\(x + half)\" y2=\"\(y + 852)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
+        body += text("5 小时", x: x + 36, y: y + 686, size: 24, weight: "600", fill: "#666", family: uiFont)
+        body += text(fiveHour, x: x + 36, y: y + 756, size: 58, weight: "720", family: uiFont)
+        body += progressBar(x: x + 196, y: y + 720, width: 258, height: 22, value: fiveHour)
+        body += text("重置：\(fiveReset)", x: x + 36, y: y + 834, size: 23, weight: "500", fill: "#666", family: uiFont)
+        body += text("本周", x: x + half + 42, y: y + 686, size: 24, weight: "600", fill: "#666", family: uiFont)
+        body += text(weekly, x: x + half + 42, y: y + 756, size: 58, weight: "720", family: uiFont)
+        body += progressBar(x: x + half + 202, y: y + 720, width: 238, height: 22, value: weekly)
+        body += text("重置：\(weeklyReset)", x: x + half + 42, y: y + 834, size: 23, weight: "500", fill: "#666", family: uiFont)
+
+        body += text("下一步", x: x, y: y + 960, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += roundedRect(x: x, y: y + 988, width: width, height: 196, radius: 34, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+        body += "<circle cx=\"\(x + 52)\" cy=\"\(y + 1048)\" r=\"22\" fill=\"#111\"/>"
+        body += "<path d=\"M \(x + 42) \(y + 1048) l 7 8 l 15 -18\" fill=\"none\" stroke=\"#fff\" stroke-width=\"5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+        body += wrapped(nextStep, x: x + 96, y: y + 1061, width: width - 136, size: 39, maxLines: 1, fill: "#111", family: uiFont)
+        body += text("完成后再切换任务", x: x + 96, y: y + 1114, size: 26, weight: "550", fill: "#666", family: uiFont)
         return body
     }
 
@@ -2184,20 +2305,27 @@ struct SVGRenderer {
 
     private func weatherContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += pageHeading("天气", subtitle: model.subhead, x: x, y: y, width: width)
-        body += modeArt(cx: x + width - 76, cy: y + 78)
-
         let current = metricValue("现在", fallback: "天气源暂不可用")
         if current.contains("不可用") {
-            body += centeredText("天气暂不可用", centerX: x + width / 2, y: y + 500, size: 82, weight: "700")
-            body += centeredText("稍后自动刷新", centerX: x + width / 2, y: y + 590, size: 38, weight: "400")
+            body += centeredText("天气暂不可用", centerX: x + width / 2, y: y + 500, size: 82, weight: "700", family: uiFont)
+            body += centeredText("稍后自动刷新", centerX: x + width / 2, y: y + 590, size: 38, weight: "400", family: uiFont)
             return body
         }
-        body += semanticWeather(current, x: x, y: y + 310, width: width, primarySize: 82, secondarySize: 56)
-        body += text(metricValue("细节", fallback: ""), x: x, y: y + 462, size: 40, weight: "400")
+        let weather = weatherSummary(current)
+        let updateLabel = model.subhead.replacingOccurrences(of: "未来几小时 · ", with: "")
+        body += text("天气 · \(updateLabel)", x: x, y: y + 36, size: 28, weight: "600", fill: "#666", family: uiFont)
+        body += text(weather.temperature, x: x - 4, y: y + 168, size: 132, weight: "700", family: uiFont)
+        body += text(weather.condition, x: x, y: y + 244, size: 46, weight: "650", family: uiFont)
+        body += text(metricValue("细节", fallback: ""), x: x, y: y + 292, size: 28, weight: "600", fill: "#666", family: uiFont)
+        body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: x + width - 142, cy: y + 112, size: 176)
+
         let rain = metricValue("降雨", fallback: "降雨待更新")
-        body += emphasisBand(label: rain, value: weatherAdvice, x: x, y: y + 525, width: width, height: 170, valueSize: 52)
-        body += weatherTimeline(x: x, y: y + 760, width: width, bottom: bottom)
+        body += roundedRect(x: x, y: y + 344, width: width, height: 150, radius: 30, fill: "#111")
+        body += text(rain, x: x + 36, y: y + 392, size: 24, weight: "650", fill: "#fff", family: uiFont)
+        body += wrapped(weatherAdvice, x: x + 36, y: y + 452, width: width - 72, size: 43, maxLines: 1, fill: "#fff", family: uiFont)
+
+        body += text("接下来", x: x, y: y + 572, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += appleWeatherTimeline(x: x, y: y + 600, width: width, bottom: bottom)
         return body
     }
 
@@ -2271,7 +2399,73 @@ struct SVGRenderer {
     }
 
     private func metricValue(_ label: String, fallback: String) -> String {
-        model.metrics.first(where: { $0.label == label })?.value ?? fallback
+        if let exact = model.metrics.first(where: { $0.label == label }) {
+            return exact.value
+        }
+        return model.metrics.first(where: { $0.label.localizedCaseInsensitiveContains(label) })?.value ?? fallback
+    }
+
+    private func noteValue(_ label: String, fallback: String) -> String {
+        for note in model.notes {
+            let row = splitRow(note)
+            if row.left == label, !row.right.isEmpty {
+                return row.right
+            }
+        }
+        return fallback
+    }
+
+    private func weatherSummary(_ value: String) -> (condition: String, temperature: String) {
+        let parts = value
+            .components(separatedBy: "，")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let primaryTokens = (parts.first ?? "")
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+        let temperatureIndex = primaryTokens.firstIndex(where: { $0.contains("°") || $0.uppercased().contains("C") })
+        let condition: String
+        var temperature: String
+        if let temperatureIndex {
+            temperature = primaryTokens[temperatureIndex]
+            let conditionTokens = primaryTokens.enumerated().compactMap { index, token in
+                index == temperatureIndex ? nil : token
+            }
+            condition = conditionTokens.joined(separator: " ").isEmpty
+                ? (model.weatherCondition?.label ?? "天气")
+                : conditionTokens.joined(separator: " ")
+        } else {
+            condition = parts.first ?? model.weatherCondition?.label ?? "天气"
+            temperature = parts.dropFirst().first ?? "--"
+        }
+        temperature = temperature
+            .replacingOccurrences(of: "+", with: "")
+            .replacingOccurrences(of: "°C", with: "°")
+            .replacingOccurrences(of: " C", with: "°")
+        return (condition, temperature)
+    }
+
+    private func humiditySummary() -> String {
+        let details = metricValue("天气细节", fallback: metricValue("细节", fallback: ""))
+        if let humidity = details.components(separatedBy: "·").first(where: { $0.contains("湿度") }) {
+            return humidity.replacingOccurrences(of: "湿度", with: "").trimmingCharacters(in: .whitespaces)
+        }
+        return "--"
+    }
+
+    private func percentageValue(_ value: String) -> Int {
+        let digits = value.split(whereSeparator: { !$0.isNumber }).first
+        return min(100, max(0, Int(digits ?? "0") ?? 0))
+    }
+
+    private func progressBar(x: Int, y: Int, width: Int, height: Int, value: String) -> String {
+        let percentage = percentageValue(value)
+        var body = roundedRect(x: x, y: y, width: width, height: height, radius: height / 2, fill: "#d2d2d5")
+        if percentage > 0 {
+            let fillWidth = max(height, width * percentage / 100)
+            body += roundedRect(x: x, y: y, width: fillWidth, height: height, radius: height / 2, fill: "#111")
+        }
+        return body
     }
 
     private func semanticWeather(
@@ -2442,6 +2636,38 @@ struct SVGRenderer {
             body += rightText(rainText, rightX: x + width, y: baseline, size: 31, weight: "700", family: "Menlo, Monaco, monospace")
         }
         return body
+    }
+
+    private func appleWeatherTimeline(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        let hours = Array(model.weatherHours.prefix(5))
+        guard !hours.isEmpty else {
+            return roundedRect(x: x, y: y, width: width, height: 240, radius: 34, fill: "#f6f6f7", stroke: "#dedee0", strokeWidth: 2)
+                + centeredText("未来几小时暂无数据", centerX: x + width / 2, y: y + 140, size: 42, weight: "650", family: uiFont)
+        }
+
+        let cardHeight = min(628, max(500, bottom - y - 60))
+        let rowHeight = cardHeight / hours.count
+        var body = roundedRect(x: x, y: y, width: width, height: cardHeight, radius: 34, fill: "#f6f6f7", stroke: "#dedee0", strokeWidth: 2)
+        for (index, hour) in hours.enumerated() {
+            let rowTop = y + index * rowHeight
+            let baseline = rowTop + Int(Double(rowHeight) * 0.67)
+            if index > 0 {
+                body += "<line x1=\"\(x + 32)\" y1=\"\(rowTop)\" x2=\"\(x + width - 32)\" y2=\"\(rowTop)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
+            }
+            body += text(hour.time, x: x + 34, y: baseline, size: 27, weight: "700", family: monoFont)
+            body += weatherIcon(condition: hour.condition, cx: x + 220, cy: rowTop + rowHeight / 2, size: 70)
+            body += text("\(hour.condition.label) \(compactTemperature(hour.temperature))", x: x + 286, y: baseline, size: 34, weight: "650", family: uiFont)
+            body += rightText("\(hour.rainChance)%", rightX: x + width - 60, y: baseline - 12, size: 27, weight: "700", family: uiFont)
+            body += progressBar(x: x + width - 240, y: baseline + 7, width: 182, height: 9, value: "\(hour.rainChance)%")
+        }
+        return body
+    }
+
+    private func compactTemperature(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "+", with: "")
+            .replacingOccurrences(of: "°C", with: "°")
+            .replacingOccurrences(of: " C", with: "°")
     }
 
     private func simpleList(
@@ -2639,7 +2865,7 @@ struct SVGRenderer {
         wrapped(value, x: x, y: y, width: width, size: size, maxLines: maxLines, fill: "#000")
     }
 
-    private func wrapped(_ value: String, x: Int, y: Int, width: Int, size: Int, maxLines: Int, fill: String) -> String {
+    private func wrapped(_ value: String, x: Int, y: Int, width: Int, size: Int, maxLines: Int, fill: String, family: String = "Georgia, serif") -> String {
         let charWidth = containsWideGlyphs(value) ? Double(size) * 1.04 : Double(size) * 0.57
         let maxChars = max(6, width / max(12, Int(charWidth)))
         var lines: [String] = []
@@ -2648,7 +2874,7 @@ struct SVGRenderer {
             lines.append(contentsOf: wrap(segment, maxChars: maxChars, maxLines: maxLines - lines.count))
         }
         return lines.enumerated().map { index, line in
-            text(line, x: x, y: y + index * Int(Double(size) * 1.18), size: size, weight: "700", fill: fill)
+            text(line, x: x, y: y + index * Int(Double(size) * 1.18), size: size, weight: "700", fill: fill, family: family)
         }.joined()
     }
 
@@ -2970,6 +3196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var cycleMenuItems: [NSMenuItem] = []
     private var frontlightMenuItems: [NSMenuItem] = []
     private var batteryProtectionMenuItems: [NSMenuItem] = []
+    private var launchAtLoginMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -2992,6 +3219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cycleMenuItems.removeAll()
         frontlightMenuItems.removeAll()
         batteryProtectionMenuItems.removeAll()
+        launchAtLoginMenuItem = nil
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = makeStatusIcon()
@@ -3072,6 +3300,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsRefreshRate.submenu = settingsRefreshRateMenu
         settingsMenu.addItem(settingsRefreshRate)
         settingsMenu.addItem(.separator())
+        let launchAtLogin = menuItem("登录时自动启动", #selector(toggleLaunchAtLogin), symbol: "power")
+        launchAtLoginMenuItem = launchAtLogin
+        settingsMenu.addItem(launchAtLogin)
         settingsMenu.addItem(menuItem("复制控制页地址", #selector(copyURL), symbol: "link"))
         settingsMenu.addItem(menuItem("复制真全屏地址", #selector(copyFrameURL), symbol: "rectangle.on.rectangle"))
         settings.submenu = settingsMenu
@@ -3190,6 +3421,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         state.setFullRefreshInterval(seconds)
         updateTitle()
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        guard Bundle.main.bundleURL.pathExtension == "app" else {
+            showAlert("请先使用已安装的 KindleDashboard.app，再开启登录时自动启动。")
+            return
+        }
+
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+            updateControlMenuState()
+        } catch {
+            showAlert("无法修改登录项：\(error.localizedDescription)")
+        }
     }
 
     @objc private func playPause() {
@@ -3346,6 +3595,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 item.state = .off
             }
         }
+
+        let launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+        launchAtLoginMenuItem?.title = menuTitle("登录时自动启动", status: launchAtLoginEnabled ? "开" : "关")
+        launchAtLoginMenuItem?.state = launchAtLoginEnabled ? .on : .off
     }
 
     private func refreshLabel(_ seconds: Int) -> String {
@@ -3453,11 +3706,90 @@ private func escape(_ value: String) -> String {
         .replacingOccurrences(of: "\"", with: "&quot;")
 }
 
+private func writeApplicationIcon(to path: String) -> Bool {
+    let side = 1024
+    guard let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: side,
+        pixelsHigh: side,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bitmapFormat: [],
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ) else {
+        return false
+    }
+
+    bitmap.size = NSSize(width: side, height: side)
+    NSGraphicsContext.saveGraphicsState()
+    guard let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+        NSGraphicsContext.restoreGraphicsState()
+        return false
+    }
+    NSGraphicsContext.current = context
+
+    NSColor.clear.setFill()
+    NSRect(x: 0, y: 0, width: side, height: side).fill()
+
+    let shell = NSBezierPath(roundedRect: NSRect(x: 70, y: 70, width: 884, height: 884), xRadius: 196, yRadius: 196)
+    NSColor(calibratedWhite: 0.08, alpha: 1).setFill()
+    shell.fill()
+
+    let bevel = NSBezierPath(roundedRect: NSRect(x: 174, y: 108, width: 676, height: 808), xRadius: 92, yRadius: 92)
+    NSColor(calibratedWhite: 0.02, alpha: 1).setFill()
+    bevel.fill()
+
+    let screenRect = NSRect(x: 224, y: 178, width: 576, height: 664)
+    let screen = NSBezierPath(roundedRect: screenRect, xRadius: 30, yRadius: 30)
+    NSColor(calibratedWhite: 0.94, alpha: 1).setFill()
+    screen.fill()
+
+    NSGraphicsContext.saveGraphicsState()
+    screen.addClip()
+    NSColor(calibratedWhite: 0.10, alpha: 1).setFill()
+    NSRect(x: 224, y: 670, width: 576, height: 172).fill()
+
+    NSColor.white.setFill()
+    NSBezierPath(roundedRect: NSRect(x: 276, y: 752, width: 238, height: 28), xRadius: 14, yRadius: 14).fill()
+    NSColor(calibratedRed: 0.43, green: 0.72, blue: 0.30, alpha: 1).setFill()
+    NSBezierPath(ovalIn: NSRect(x: 728, y: 746, width: 38, height: 38)).fill()
+
+    NSColor(calibratedWhite: 0.12, alpha: 1).setFill()
+    NSBezierPath(roundedRect: NSRect(x: 276, y: 558, width: 360, height: 44), xRadius: 12, yRadius: 12).fill()
+    NSColor(calibratedWhite: 0.40, alpha: 1).setFill()
+    NSBezierPath(roundedRect: NSRect(x: 276, y: 500, width: 448, height: 24), xRadius: 12, yRadius: 12).fill()
+    NSBezierPath(roundedRect: NSRect(x: 276, y: 454, width: 312, height: 24), xRadius: 12, yRadius: 12).fill()
+
+    NSColor(calibratedWhite: 0.12, alpha: 1).setFill()
+    for x: CGFloat in [276, 436, 596] {
+        NSBezierPath(roundedRect: NSRect(x: x, y: 268, width: 128, height: 118), xRadius: 14, yRadius: 14).fill()
+    }
+    NSGraphicsContext.restoreGraphicsState()
+
+    NSColor(calibratedWhite: 0.44, alpha: 1).setFill()
+    NSBezierPath(ovalIn: NSRect(x: 492, y: 128, width: 40, height: 12)).fill()
+    NSGraphicsContext.restoreGraphicsState()
+
+    guard let data = bitmap.representation(using: .png, properties: [.compressionFactor: 1]) else {
+        return false
+    }
+    return (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
+}
+
 if CommandLine.arguments.contains("--dump-home-svg") {
     let state = AppState()
     let model = DashboardData.make(snapshot: state.snapshot())
     print(SVGRenderer(model: model).svg())
     exit(0)
+}
+
+if let iconIndex = CommandLine.arguments.firstIndex(of: "--write-app-icon"),
+   CommandLine.arguments.indices.contains(iconIndex + 1) {
+    exit(writeApplicationIcon(to: CommandLine.arguments[iconIndex + 1]) ? 0 : 1)
 }
 
 if CommandLine.arguments.contains("--dump-codex-svg") {

@@ -134,14 +134,21 @@ git clone https://github.com/Mibslee/kindledashboard.git
 cd kindledashboard
 ```
 
-### 2. 构建并启动 Mac 端
+### 2. 构建 Mac App
 
 ```bash
-swift build
+./scripts/build-app.sh
+```
+
+脚本会生成 `dist/KindleDashboard.app`。将它拖入“应用程序”文件夹，之后直接双击启动即可；它会常驻 Mac 顶栏，不依赖终端窗口。需要随系统启动时，在顶栏菜单的“设置”中开启“登录时自动启动”。
+
+开发调试时仍可使用：
+
+```bash
 swift run KindleDashboard
 ```
 
-启动后访问：
+App 启动后访问：
 
 ```text
 http://127.0.0.1:8787/

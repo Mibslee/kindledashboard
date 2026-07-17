@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added a signed macOS app-bundle build pipeline with a native app icon, privacy descriptions, and menu-bar-only launch behavior.
+- Added a macOS login-item toggle so the installed app can start without a terminal after sign-in.
+
+### Changed
+
+- Changed `start.sh` to open the installed `KindleDashboard.app` when available instead of attaching the service to a terminal session.
+
+### Fixed
+
+- Prevented transient weather failures by caching valid data for ten minutes, retaining a marked fallback for up to six hours, and retrying direct and configured-proxy network paths.
+
 ## v0.3.0
 
 ### Added

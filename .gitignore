@@ -4,6 +4,7 @@
 *.xcuserstate
 outputs/
 DerivedData/
+dist/
 kindle-extension/kindledashboard/current.png
 kindle-extension/kindledashboard/current.svg
 kindle-extension/kindledashboard/control.json
