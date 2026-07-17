@@ -3,7 +3,7 @@ set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 APP_NAME="KindleDashboard"
-VERSION="${VERSION:-0.3.0}"
+VERSION="${VERSION:-0.3.1}"
 BUILD_ROOT="$ROOT/.build/app-bundle"
 APP_PATH="$BUILD_ROOT/$APP_NAME.app"
 DIST_PATH="$ROOT/dist/$APP_NAME.app"
