@@ -66,19 +66,38 @@ enum KindleMode: String, CaseIterable, Identifiable {
 
 enum KindleOrientation: String, CaseIterable {
     case portrait
-    case landscapeClockwise
+    case landscape
 
     var title: String {
         switch self {
         case .portrait: return "Portrait"
-        case .landscapeClockwise: return "Landscape CW"
+        case .landscape: return "Landscape"
         }
     }
 
     var frameSize: (width: Int, height: Int) {
         switch self {
         case .portrait: return (1072, 1448)
-        case .landscapeClockwise: return (1448, 1072)
+        case .landscape: return (1448, 1072)
+        }
+    }
+}
+
+enum KindleLandscapeDirection: String, CaseIterable {
+    case clockwise
+    case counterClockwise
+
+    var title: String {
+        switch self {
+        case .clockwise: return "顺时针横放"
+        case .counterClockwise: return "逆时针横放"
+        }
+    }
+
+    var devicePNGRotationDegreesClockwise: Int {
+        switch self {
+        case .clockwise: return 270
+        case .counterClockwise: return 90
         }
     }
 }
@@ -86,6 +105,7 @@ enum KindleOrientation: String, CaseIterable {
 struct AppSnapshot {
     let mode: KindleMode
     let orientation: KindleOrientation
+    let landscapeDirection: KindleLandscapeDirection
     let cycleEnabled: Bool
     let cycleInterval: TimeInterval
     let refreshSerial: Int
@@ -112,6 +132,7 @@ final class AppState: @unchecked Sendable {
         static let lightRefreshInterval = "KindleDashboard.LightRefreshInterval"
         static let fullRefreshInterval = "KindleDashboard.FullRefreshInterval"
         static let orientation = "KindleDashboard.Orientation"
+        static let landscapeDirection = "KindleDashboard.LandscapeDirection"
         static let batteryProtectionEnabled = "KindleDashboard.BatteryProtectionEnabled"
     }
 
@@ -119,6 +140,7 @@ final class AppState: @unchecked Sendable {
     private let defaults: UserDefaults
     private var mode: KindleMode = .home
     private var orientation: KindleOrientation = .portrait
+    private var landscapeDirection: KindleLandscapeDirection = .counterClockwise
     private var cycleEnabled = false
     private var cycleInterval: TimeInterval = 90
     private var refreshSerial = 1
@@ -156,9 +178,16 @@ final class AppState: @unchecked Sendable {
         if savedFull > 0 {
             fullRefreshInterval = min(1800, max(120, savedFull))
         }
-        if let savedOrientation = defaults.string(forKey: DefaultsKey.orientation),
-           let value = KindleOrientation(rawValue: savedOrientation) {
-            orientation = value
+        if let savedOrientation = defaults.string(forKey: DefaultsKey.orientation) {
+            if savedOrientation == "landscapeClockwise" {
+                orientation = .landscape
+            } else if let value = KindleOrientation(rawValue: savedOrientation) {
+                orientation = value
+            }
+        }
+        if let savedDirection = defaults.string(forKey: DefaultsKey.landscapeDirection),
+           let value = KindleLandscapeDirection(rawValue: savedDirection) {
+            landscapeDirection = value
         }
         if defaults.object(forKey: DefaultsKey.batteryProtectionEnabled) != nil {
             batteryProtectionEnabled = defaults.bool(forKey: DefaultsKey.batteryProtectionEnabled)
@@ -177,6 +206,14 @@ final class AppState: @unchecked Sendable {
         lock.lock()
         orientation = newOrientation
         defaults.set(newOrientation.rawValue, forKey: DefaultsKey.orientation)
+        bumpRefreshLocked()
+        lock.unlock()
+    }
+
+    func setLandscapeDirection(_ newDirection: KindleLandscapeDirection) {
+        lock.lock()
+        landscapeDirection = newDirection
+        defaults.set(newDirection.rawValue, forKey: DefaultsKey.landscapeDirection)
         bumpRefreshLocked()
         lock.unlock()
     }
@@ -313,6 +350,7 @@ final class AppState: @unchecked Sendable {
         let result = AppSnapshot(
             mode: mode,
             orientation: orientation,
+            landscapeDirection: landscapeDirection,
             cycleEnabled: cycleEnabled,
             cycleInterval: cycleInterval,
             refreshSerial: refreshSerial,
@@ -2199,7 +2237,7 @@ struct HTMLRenderer {
     let snapshot: AppSnapshot
 
     func html() -> String {
-        let bodyClass = model.orientation == .landscapeClockwise ? "landscape" : "portrait"
+        let bodyClass = model.orientation == .landscape ? "landscape" : "portrait"
         return """
         <!doctype html>
         <html>
@@ -2410,7 +2448,7 @@ struct SVGRenderer {
     }
 
     private func pageContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
-        if model.orientation == .landscapeClockwise {
+        if model.orientation == .landscape {
             return landscapePageContent(x: x, y: y, width: width, bottom: bottom)
         }
         switch model.mode {
@@ -2470,16 +2508,16 @@ struct SVGRenderer {
         let rightWidth = width - leftWidth - gap
         let weather = weatherSummary(metricValue("天气", fallback: "天气待更新，--"))
 
-        body += text(model.subhead, x: x, y: y + 32, size: 27, weight: "600", fill: "#666", family: uiFont)
+        body += text(model.subhead, x: x, y: y + 32, size: 30, weight: "600", fill: "#555", family: uiFont)
         body += text(DashboardData.clockTime(model.generatedAt), x: x - 4, y: y + 150, size: 112, weight: "720", family: uiFont)
 
         body += roundedRect(x: x, y: y + 194, width: leftWidth, height: 210, radius: 34, fill: "#f1f1f3")
         body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: x + 96, cy: y + 287, size: 122)
         body += text(weather.temperature, x: x + 186, y: y + 282, size: 64, weight: "720", family: uiFont)
-        body += text("\(weather.condition) · \(humiditySummary())", x: x + 188, y: y + 338, size: 25, weight: "600", fill: "#666", family: uiFont)
+        body += text("\(weather.condition) · \(humiditySummary())", x: x + 188, y: y + 338, size: 30, weight: "600", fill: "#555", family: uiFont)
 
         body += roundedRect(x: x, y: y + 438, width: leftWidth, height: 164, radius: 30, fill: "#111")
-        body += text(metricValue("降雨", fallback: "天气提醒"), x: x + 30, y: y + 484, size: 23, weight: "650", fill: "#bbb", family: uiFont)
+        body += text(metricValue("降雨", fallback: "天气提醒"), x: x + 30, y: y + 484, size: 28, weight: "650", fill: "#ccc", family: uiFont)
         body += wrapped(
             metricValue("出门建议", fallback: "天气稍后更新"),
             x: x + 30,
@@ -2491,11 +2529,11 @@ struct SVGRenderer {
             family: uiFont
         )
 
-        body += text("正在处理", x: rightX, y: y + 32, size: 26, weight: "650", fill: "#666", family: uiFont)
+        body += text("正在处理", x: rightX, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += roundedRect(x: rightX, y: y + 56, width: rightWidth, height: 350, radius: 36, fill: "#111")
         body += roundedRect(x: rightX + 34, y: y + 88, width: 126, height: 46, radius: 23, fill: "#fff")
         body += "<circle cx=\"\(rightX + 59)\" cy=\"\(y + 111)\" r=\"6\" fill=\"#111\"/>"
-        body += text("Codex", x: rightX + 78, y: y + 120, size: 22, weight: "700", fill: "#111", family: uiFont)
+        body += text("Codex", x: rightX + 78, y: y + 120, size: 26, weight: "700", fill: "#111", family: uiFont)
         body += wrapped(
             metricValue("Codex", fallback: "等待当前任务"),
             x: rightX + 34,
@@ -2507,12 +2545,12 @@ struct SVGRenderer {
             family: uiFont
         )
         body += "<line x1=\"\(rightX + 34)\" y1=\"\(y + 292)\" x2=\"\(rightX + rightWidth - 34)\" y2=\"\(y + 292)\" stroke=\"#444\" stroke-width=\"2\"/>"
-        body += text("5 小时", x: rightX + 34, y: y + 342, size: 23, weight: "600", fill: "#aaa", family: uiFont)
+        body += text("5 小时", x: rightX + 34, y: y + 342, size: 28, weight: "600", fill: "#bbb", family: uiFont)
         body += text(metricValue("5h", fallback: "--"), x: rightX + 145, y: y + 344, size: 32, weight: "720", fill: "#fff", family: uiFont)
-        body += text("本周", x: rightX + 335, y: y + 342, size: 23, weight: "600", fill: "#aaa", family: uiFont)
+        body += text("本周", x: rightX + 335, y: y + 342, size: 28, weight: "600", fill: "#bbb", family: uiFont)
         body += text(metricValue("周额度", fallback: "--"), x: rightX + 425, y: y + 344, size: 32, weight: "720", fill: "#fff", family: uiFont)
 
-        body += text("设备状态", x: rightX, y: y + 472, size: 26, weight: "650", fill: "#666", family: uiFont)
+        body += text("设备状态", x: rightX, y: y + 472, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += roundedRect(x: rightX, y: y + 496, width: rightWidth, height: 268, radius: 34, fill: "#f6f6f7", stroke: "#dedee0", strokeWidth: 2)
         body += "<circle cx=\"\(rightX + 42)\" cy=\"\(y + 548)\" r=\"11\" fill=\"#111\"/>"
         body += text(metricValue("Mac", fallback: "Mac 状态不可用"), x: rightX + 68, y: y + 559, size: 34, weight: "680", family: uiFont)
@@ -2529,8 +2567,8 @@ struct SVGRenderer {
             height: bottom - (y + 792) - 12,
             metrics: [
                 Metric(label: "今天", value: TraditionalCalendar.lunarDateText(model.generatedAt), emphasis: false),
-                Metric(label: "节气", value: TraditionalCalendar.solarTermSummary(model.generatedAt), emphasis: false),
-                Metric(label: "年度", value: TraditionalCalendar.yearProgressSummary(model.generatedAt), emphasis: false)
+                Metric(label: "节气", value: compactSolarTermSummary(model.generatedAt), emphasis: false),
+                Metric(label: "年度", value: compactYearProgressSummary(model.generatedAt), emphasis: false)
             ]
         )
         return body
@@ -2547,11 +2585,11 @@ struct SVGRenderer {
         body += roundedRect(x: x, y: y + 154, width: leftWidth, height: 560, radius: 38, fill: "#111")
         body += roundedRect(x: x + 38, y: y + 192, width: 150, height: 50, radius: 25, fill: "#fff")
         body += "<circle cx=\"\(x + 66)\" cy=\"\(y + 217)\" r=\"7\" fill=\"#111\"/>"
-        body += text("处理中", x: x + 87, y: y + 227, size: 23, weight: "700", fill: "#111", family: uiFont)
+        body += text("处理中", x: x + 87, y: y + 227, size: 28, weight: "700", fill: "#111", family: uiFont)
         body += wrapped(task, x: x + 40, y: y + 352, width: leftWidth - 80, size: 62, maxLines: 3, fill: "#fff", family: uiFont)
         body += "<line x1=\"\(x + 40)\" y1=\"\(y + 536)\" x2=\"\(x + leftWidth - 40)\" y2=\"\(y + 536)\" stroke=\"#444\" stroke-width=\"2\"/>"
-        body += text(noteValue("限额状态", fallback: "状态可继续"), x: x + 40, y: y + 588, size: 25, weight: "600", fill: "#aaa", family: uiFont)
-        body += text("下一步", x: x + 40, y: y + 642, size: 23, weight: "600", fill: "#aaa", family: uiFont)
+        body += text(noteValue("限额状态", fallback: "状态可继续"), x: x + 40, y: y + 588, size: 30, weight: "600", fill: "#bbb", family: uiFont)
+        body += text("下一步", x: x + 40, y: y + 642, size: 28, weight: "600", fill: "#bbb", family: uiFont)
         body += wrapped(noteValue("下一步", fallback: "等待下一步"), x: x + 142, y: y + 644, width: leftWidth - 182, size: 32, maxLines: 1, fill: "#fff", family: uiFont)
 
         let quotaWidth = (rightWidth - 18) / 2
@@ -2574,11 +2612,11 @@ struct SVGRenderer {
             height: 250
         )
         body += roundedRect(x: rightX, y: y + 432, width: rightWidth, height: 282, radius: 34, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
-        body += text("完成标准", x: rightX + 32, y: y + 482, size: 24, weight: "650", fill: "#666", family: uiFont)
+        body += text("完成标准", x: rightX + 32, y: y + 482, size: 28, weight: "650", fill: "#555", family: uiFont)
         body += "<circle cx=\"\(rightX + 56)\" cy=\"\(y + 548)\" r=\"22\" fill=\"#111\"/>"
         body += "<path d=\"M \(rightX + 46) \(y + 548) l 7 8 l 15 -18\" fill=\"none\" stroke=\"#fff\" stroke-width=\"5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
         body += wrapped("完成当前任务，再切换上下文", x: rightX + 94, y: y + 560, width: rightWidth - 126, size: 34, maxLines: 2, fill: "#111", family: uiFont)
-        body += text("保持信息稳定、行动明确", x: rightX + 32, y: y + 668, size: 24, weight: "550", fill: "#666", family: uiFont)
+        body += text("保持信息稳定、行动明确", x: rightX + 32, y: y + 668, size: 28, weight: "550", fill: "#555", family: uiFont)
         let recentRows = Array(model.notes.dropFirst(4).prefix(2))
         body += landscapeRecentStrip(
             x: x,
@@ -2604,18 +2642,18 @@ struct SVGRenderer {
         let columnWidth = (readerWidth - 72) / 2
 
         body += roundedRect(x: x, y: contentTop, width: sidebarWidth, height: contentHeight, radius: 34, fill: "#111")
-        body += text("阅读位置", x: x + 30, y: contentTop + 54, size: 23, weight: "650", fill: "#aaa", family: uiFont)
+        body += text("阅读位置", x: x + 30, y: contentTop + 54, size: 28, weight: "650", fill: "#bbb", family: uiFont)
         body += text(metricValue("页码", fallback: "--"), x: x + 28, y: contentTop + 152, size: 68, weight: "740", fill: "#fff", family: uiFont)
         let progressWidth = sidebarWidth - 60
         let documentProgress = percentageValue(documentProgressValue())
         body += roundedRect(x: x + 30, y: contentTop + 186, width: progressWidth, height: 12, radius: 6, fill: "#666")
         body += roundedRect(x: x + 30, y: contentTop + 186, width: max(12, progressWidth * documentProgress / 100), height: 12, radius: 6, fill: "#fff")
-        body += text("剩余", x: x + 30, y: contentTop + 258, size: 22, weight: "650", fill: "#aaa", family: uiFont)
+        body += text("剩余", x: x + 30, y: contentTop + 258, size: 28, weight: "650", fill: "#bbb", family: uiFont)
         body += wrapped(metricValue("剩余", fallback: "--"), x: x + 30, y: contentTop + 314, width: sidebarWidth - 60, size: 34, maxLines: 1, fill: "#fff", family: uiFont)
         body += line(x1: x + 30, y1: contentTop + 382, x2: x + sidebarWidth - 30, y2: contentTop + 382, stroke: 2)
-        body += text("翻页", x: x + 30, y: contentTop + 438, size: 22, weight: "650", fill: "#aaa", family: uiFont)
+        body += text("翻页", x: x + 30, y: contentTop + 438, size: 28, weight: "650", fill: "#bbb", family: uiFont)
         body += text("Mac 顶栏", x: x + 30, y: contentTop + 494, size: 31, weight: "700", fill: "#fff", family: uiFont)
-        body += wrapped("短文档保持自然留白；长文档按页阅读。", x: x + 30, y: contentTop + contentHeight - 92, width: sidebarWidth - 60, size: 22, maxLines: 2, fill: "#aaa", family: uiFont)
+        body += wrapped("长文档按页阅读", x: x + 30, y: contentTop + contentHeight - 70, width: sidebarWidth - 60, size: 28, maxLines: 1, fill: "#bbb", family: uiFont)
 
         body += roundedRect(x: readerX, y: contentTop, width: readerWidth, height: contentHeight, radius: 34, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
         body += line(x1: readerX + readerWidth / 2, y1: contentTop + 34, x2: readerX + readerWidth / 2, y2: contentTop + contentHeight - 34, stroke: 1)
@@ -2648,16 +2686,16 @@ struct SVGRenderer {
         let isIdle = nowPlaying.contains("未运行") || nowPlaying.contains("未播放")
 
         body += roundedRect(x: x, y: y + 154, width: leftWidth, height: 500, radius: 38, fill: isIdle ? "#f5f5f6" : "#111", stroke: isIdle ? "#dedee0" : nil, strokeWidth: isIdle ? 2 : 0)
-        body += text(isIdle ? "等待播放" : "正在播放", x: x + 42, y: y + 214, size: 26, weight: "650", fill: isIdle ? "#666" : "#aaa", family: uiFont)
+        body += text(isIdle ? "等待播放" : "正在播放", x: x + 42, y: y + 214, size: 30, weight: "650", fill: isIdle ? "#555" : "#bbb", family: uiFont)
         body += wrapped(nowPlaying, x: x + 42, y: y + 350, width: leftWidth - 84, size: 68, maxLines: 3, fill: isIdle ? "#111" : "#fff", family: uiFont)
         body += "<line x1=\"\(x + 42)\" y1=\"\(y + 520)\" x2=\"\(x + leftWidth - 42)\" y2=\"\(y + 520)\" stroke=\"\(isIdle ? "#d0d0d0" : "#444")\" stroke-width=\"2\"/>"
-        body += text("专辑", x: x + 42, y: y + 586, size: 24, weight: "650", fill: isIdle ? "#666" : "#aaa", family: uiFont)
+        body += text("专辑", x: x + 42, y: y + 586, size: 28, weight: "650", fill: isIdle ? "#555" : "#bbb", family: uiFont)
         body += wrapped(metricValue("专辑", fallback: "--"), x: x + 128, y: y + 588, width: leftWidth - 170, size: 34, maxLines: 1, fill: isIdle ? "#111" : "#fff", family: uiFont)
 
         body += roundedRect(x: rightX, y: y + 154, width: rightWidth, height: 500, radius: 36, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
         body += centeredText(isIdle ? "暂未播放" : metricValue("状态", fallback: "播放中"), centerX: rightX + rightWidth / 2, y: y + 286, size: 48, weight: "700", family: uiFont)
         body += line(x1: rightX + 34, y1: y + 340, x2: rightX + rightWidth - 34, y2: y + 340, stroke: 2)
-        body += centeredText("当前专辑", centerX: rightX + rightWidth / 2, y: y + 414, size: 23, weight: "650", fill: "#666", family: uiFont)
+        body += centeredText("当前专辑", centerX: rightX + rightWidth / 2, y: y + 414, size: 28, weight: "650", fill: "#555", family: uiFont)
         body += wrapped(metricValue("专辑", fallback: "--"), x: rightX + 32, y: y + 486, width: rightWidth - 64, size: 34, maxLines: 2, fill: "#111", family: uiFont)
 
         let controlTop = y + 682
@@ -2679,16 +2717,16 @@ struct SVGRenderer {
         let rightX = x + leftWidth + gap
         let rightWidth = width - leftWidth - gap
 
-        body += text("天气 · \(model.subhead.replacingOccurrences(of: "未来几小时 · ", with: ""))", x: x, y: y + 32, size: 27, weight: "600", fill: "#666", family: uiFont)
+        body += text("天气 · \(model.subhead.replacingOccurrences(of: "未来几小时 · ", with: ""))", x: x, y: y + 32, size: 30, weight: "600", fill: "#555", family: uiFont)
         body += text(weather.temperature, x: x - 4, y: y + 176, size: 138, weight: "720", family: uiFont)
         body += text(weather.condition, x: x, y: y + 244, size: 46, weight: "680", family: uiFont)
-        body += text(metricValue("细节", fallback: ""), x: x, y: y + 292, size: 26, weight: "600", fill: "#666", family: uiFont)
+        body += text(metricValue("细节", fallback: ""), x: x, y: y + 292, size: 30, weight: "600", fill: "#555", family: uiFont)
         body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: x + leftWidth - 92, cy: y + 120, size: 138)
         body += roundedRect(x: x, y: y + 344, width: leftWidth, height: 246, radius: 32, fill: "#111")
-        body += text(metricValue("降雨", fallback: "降雨提醒"), x: x + 30, y: y + 394, size: 23, weight: "650", fill: "#aaa", family: uiFont)
+        body += text(metricValue("降雨", fallback: "降雨提醒"), x: x + 30, y: y + 394, size: 28, weight: "650", fill: "#bbb", family: uiFont)
         body += wrapped(weatherAdvice, x: x + 30, y: y + 484, width: leftWidth - 60, size: 38, maxLines: 2, fill: "#fff", family: uiFont)
 
-        body += text("接下来", x: rightX, y: y + 32, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += text("接下来", x: rightX, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += landscapeWeatherTimeline(x: rightX, y: y + 56, width: rightWidth, height: 534)
         body += landscapeWeatherDetails(x: x, y: y + 620, width: width, height: bottom - (y + 620) - 12)
         return body
@@ -2706,27 +2744,30 @@ struct SVGRenderer {
         let rightWidth = width - leftWidth - gap
         var body = ""
 
-        body += text("\(calendarYear(date))年 · \(monthTitle(date))", x: x, y: y + 32, size: 27, weight: "650", fill: "#666", family: uiFont)
-        body += text("\(day)", x: x - 8, y: y + 202, size: 178, weight: "740", family: uiFont)
-        body += text(TraditionalCalendar.weekSummary(date), x: x + 8, y: y + 262, size: 34, weight: "680", family: uiFont)
-        body += roundedRect(x: x, y: y + 310, width: leftWidth, height: 180, radius: 32, fill: "#111")
-        body += text("中国农历", x: x + 30, y: y + 360, size: 23, weight: "650", fill: "#aaa", family: uiFont)
-        body += text(TraditionalCalendar.lunarDateText(date), x: x + 30, y: y + 420, size: 43, weight: "720", fill: "#fff", family: uiFont)
-        body += text(TraditionalCalendar.lunarYearText(date), x: x + 30, y: y + 458, size: 23, weight: "600", fill: "#aaa", family: uiFont)
+        body += text("\(calendarYear(date))年 · \(monthTitle(date))", x: x, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
+        body += text("\(day)", x: x - 4, y: y + 202, size: 150, weight: "740", family: uiFont)
+        body += text(DashboardData.clockTime(date), x: x + 184, y: y + 154, size: 60, weight: "740", family: monoFont)
+        body += text(TraditionalCalendar.weekSummary(date), x: x + 184, y: y + 218, size: 30, weight: "680", fill: "#555", family: uiFont)
 
-        body += roundedRect(x: x, y: y + 520, width: leftWidth, height: 140, radius: 28, fill: "#f1f1f3")
-        body += text("节气", x: x + 26, y: y + 562, size: 22, weight: "650", fill: "#666", family: uiFont)
-        body += wrapped(TraditionalCalendar.solarTermSummary(date), x: x + 26, y: y + 604, width: leftWidth - 52, size: 25, maxLines: 2, fill: "#111", family: uiFont)
-        body += roundedRect(x: x, y: y + 680, width: leftWidth, height: bottom - (y + 680) - 12, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
-        body += text("本月节气", x: x + 26, y: y + 726, size: 22, weight: "650", fill: "#666", family: uiFont)
-        body += wrapped(monthSolarTermsSummary(date), x: x + 26, y: y + 782, width: leftWidth - 52, size: 27, maxLines: 2, fill: "#111", family: uiFont)
-        body += line(x1: x + 26, y1: y + 834, x2: x + leftWidth - 26, y2: y + 834, stroke: 1)
-        body += text("年度进度", x: x + 26, y: y + 874, size: 22, weight: "650", fill: "#666", family: uiFont)
-        body += wrapped(TraditionalCalendar.yearProgressSummary(date), x: x + 26, y: y + 912, width: leftWidth - 52, size: 19, maxLines: 2, fill: "#111", family: uiFont)
+        body += roundedRect(x: x, y: y + 286, width: leftWidth, height: 170, radius: 32, fill: "#111")
+        body += text("中国农历", x: x + 30, y: y + 336, size: 28, weight: "650", fill: "#bbb", family: uiFont)
+        body += text(TraditionalCalendar.lunarDateText(date), x: x + 30, y: y + 400, size: 43, weight: "720", fill: "#fff", family: uiFont)
+        body += text(TraditionalCalendar.lunarYearText(date), x: x + 30, y: y + 438, size: 28, weight: "600", fill: "#bbb", family: uiFont)
 
-        body += text("本月", x: rightX, y: y + 32, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += roundedRect(x: x, y: y + 476, width: leftWidth, height: 156, radius: 28, fill: "#f1f1f3")
+        body += text("当前节气", x: x + 26, y: y + 524, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += wrapped(compactSolarTermSummary(date), x: x + 26, y: y + 582, width: leftWidth - 52, size: 31, maxLines: 2, fill: "#111", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 652, width: leftWidth, height: bottom - (y + 652) - 12, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += text("本月节气", x: x + 26, y: y + 700, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += wrapped(monthSolarTermsSummary(date), x: x + 26, y: y + 758, width: leftWidth - 52, size: 31, maxLines: 2, fill: "#111", family: uiFont)
+        body += line(x1: x + 26, y1: y + 812, x2: x + leftWidth - 26, y2: y + 812, stroke: 1)
+        body += text("年度进度", x: x + 26, y: y + 850, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += wrapped(compactYearProgressSummary(date), x: x + 26, y: y + 896, width: leftWidth - 52, size: 28, maxLines: 2, fill: "#111", family: uiFont)
+
+        body += text("本月", x: rightX, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += roundedRect(x: rightX, y: y + 56, width: rightWidth, height: bottom - (y + 56) - 12, radius: 34, fill: "#f8f8f9", stroke: "#dedee0", strokeWidth: 2)
-        body += monthCalendarGrid(date: date, x: rightX + 24, y: y + 86, width: rightWidth - 48, rowHeight: 112, daySize: 37, secondarySize: 18)
+        body += monthCalendarGrid(date: date, x: rightX + 24, y: y + 86, width: rightWidth - 48, rowHeight: 112, daySize: 42, secondarySize: 24)
         return body
     }
 
@@ -2738,13 +2779,13 @@ struct SVGRenderer {
         let rightWidth = width - leftWidth - gap
 
         body += roundedRect(x: x, y: y + 154, width: leftWidth, height: 500, radius: 38, fill: "#111")
-        body += text("当前任务", x: x + 42, y: y + 214, size: 25, weight: "650", fill: "#aaa", family: uiFont)
+        body += text("当前任务", x: x + 42, y: y + 214, size: 30, weight: "650", fill: "#bbb", family: uiFont)
         body += wrapped(model.metrics.first?.value ?? "等待任务", x: x + 42, y: y + 350, width: leftWidth - 84, size: 68, maxLines: 3, fill: "#fff", family: uiFont)
         body += "<line x1=\"\(x + 42)\" y1=\"\(y + 520)\" x2=\"\(x + leftWidth - 42)\" y2=\"\(y + 520)\" stroke=\"#444\" stroke-width=\"2\"/>"
         body += text("完成当前任务，再切换", x: x + 42, y: y + 596, size: 31, weight: "650", fill: "#bbb", family: uiFont)
 
         body += roundedRect(x: rightX, y: y + 154, width: rightWidth, height: 500, radius: 36, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
-        body += centeredText("建议专注", centerX: rightX + rightWidth / 2, y: y + 234, size: 25, weight: "650", fill: "#666", family: uiFont)
+        body += centeredText("建议专注", centerX: rightX + rightWidth / 2, y: y + 234, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += centeredText(metricValue("建议专注", fallback: "50 分钟"), centerX: rightX + rightWidth / 2, y: y + 398, size: 94, weight: "740", family: uiFont)
         body += line(x1: rightX + 42, y1: y + 456, x2: rightX + rightWidth - 42, y2: y + 456, stroke: 2)
         body += centeredText("结束后离开屏幕休息", centerX: rightX + rightWidth / 2, y: y + 550, size: 30, weight: "600", fill: "#666", family: uiFont)
@@ -2770,13 +2811,13 @@ struct SVGRenderer {
         let rightWidth = width - leftWidth - gap
 
         body += roundedRect(x: x, y: y + 154, width: leftWidth, height: 250, radius: 34, fill: "#111")
-        body += text("当前状态", x: x + 32, y: y + 206, size: 24, weight: "650", fill: "#aaa", family: uiFont)
+        body += text("当前状态", x: x + 32, y: y + 206, size: 30, weight: "650", fill: "#bbb", family: uiFont)
         body += wrapped(model.metrics.first?.value ?? "不可用", x: x + 32, y: y + 300, width: leftWidth - 64, size: 48, maxLines: 2, fill: "#fff", family: uiFont)
         body += roundedRect(x: x, y: y + 436, width: leftWidth, height: 150, radius: 30, fill: "#f1f1f3")
-        body += text("连续运行", x: x + 30, y: y + 482, size: 23, weight: "650", fill: "#666", family: uiFont)
+        body += text("连续运行", x: x + 30, y: y + 482, size: 28, weight: "650", fill: "#555", family: uiFont)
         body += wrapped(metricValue("运行", fallback: "就绪"), x: x + 30, y: y + 538, width: leftWidth - 60, size: 32, maxLines: 1, fill: "#111", family: uiFont)
         body += roundedRect(x: x, y: y + 616, width: leftWidth, height: bottom - (y + 616) - 12, radius: 34, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
-        body += text("运行建议", x: x + 32, y: y + 668, size: 24, weight: "650", fill: "#666", family: uiFont)
+        body += text("运行建议", x: x + 32, y: y + 668, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += wrapped("状态稳定时保持安静；出现温控或内存压力再介入。", x: x + 32, y: y + 754, width: leftWidth - 64, size: 34, maxLines: 3, fill: "#111", family: uiFont)
 
         let systemMetrics = model.metrics.dropFirst().prefix(3).map { metric in
@@ -2803,9 +2844,9 @@ struct SVGRenderer {
 
     private func landscapeHeader(title: String, eyebrow: String, x: Int, y: Int, width: Int) -> String {
         var body = ""
-        body += text(eyebrow, x: x, y: y + 30, size: 25, weight: "650", fill: "#666", family: uiFont)
+        body += text(eyebrow, x: x, y: y + 30, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += text(title, x: x - 2, y: y + 112, size: 70, weight: "720", family: uiFont)
-        body += rightText(model.subhead, rightX: x + width, y: y + 106, size: 27, weight: "550", fill: "#666", family: uiFont)
+        body += rightText(model.subhead, rightX: x + width, y: y + 106, size: 32, weight: "550", fill: "#555", family: uiFont)
         body += line(x1: x, y1: y + 134, x2: x + width, y2: y + 134, stroke: 2)
         return body
     }
@@ -2820,10 +2861,10 @@ struct SVGRenderer {
         height: Int
     ) -> String {
         var body = roundedRect(x: x, y: y, width: width, height: height, radius: 32, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
-        body += text(label, x: x + 28, y: y + 48, size: 23, weight: "650", fill: "#666", family: uiFont)
+        body += text(label, x: x + 28, y: y + 48, size: 28, weight: "650", fill: "#555", family: uiFont)
         body += text(value, x: x + 28, y: y + 126, size: 58, weight: "740", family: uiFont)
         body += progressBar(x: x + 28, y: y + 154, width: width - 56, height: 14, value: value)
-        body += text("重置 \(detail)", x: x + 28, y: y + height - 32, size: 21, weight: "550", fill: "#666", family: uiFont)
+        body += text("重置 \(detail)", x: x + 28, y: y + height - 32, size: 26, weight: "550", fill: "#555", family: uiFont)
         return body
     }
 
@@ -2832,15 +2873,15 @@ struct SVGRenderer {
         guard !visible.isEmpty, height > 0 else { return "" }
         let columnWidth = width / visible.count
         let labelY = y + max(46, height / 2 - 30)
-        let valueY = labelY + 58
+        let valueY = labelY + 50
         var body = roundedRect(x: x, y: y, width: width, height: height, radius: 30, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
         for (index, metric) in visible.enumerated() {
             let columnX = x + index * columnWidth
             if index > 0 {
                 body += line(x1: columnX, y1: y + 24, x2: columnX, y2: y + height - 24, stroke: 1)
             }
-            body += text(metric.label, x: columnX + 24, y: labelY, size: 22, weight: "650", fill: "#666", family: uiFont)
-            body += wrapped(metric.value, x: columnX + 24, y: valueY, width: columnWidth - 48, size: height < 190 ? 22 : 30, maxLines: 2, fill: "#111", family: uiFont)
+            body += text(metric.label, x: columnX + 24, y: labelY, size: 28, weight: "650", fill: "#555", family: uiFont)
+            body += wrapped(metric.value, x: columnX + 24, y: valueY, width: columnWidth - 48, size: height < 190 ? 30 : 34, maxLines: 2, fill: "#111", family: uiFont)
         }
         return body
     }
@@ -2858,13 +2899,13 @@ struct SVGRenderer {
         let titleWidth = 220
         let rowWidth = (width - titleWidth) / visible.count
         var body = roundedRect(x: x, y: y, width: width, height: height, radius: 30, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
-        body += text(title, x: x + 30, y: y + height / 2 + 10, size: 25, weight: "680", fill: "#555", family: uiFont)
+        body += text(title, x: x + 30, y: y + height / 2 + 10, size: 30, weight: "680", fill: "#444", family: uiFont)
         for (index, note) in visible.enumerated() {
             let row = splitRow(note)
             let rowX = x + titleWidth + index * rowWidth
             body += line(x1: rowX, y1: y + 24, x2: rowX, y2: y + height - 24, stroke: 1)
-            body += wrapped(row.left, x: rowX + 26, y: y + height / 2 - 4, width: rowWidth - 52, size: 28, maxLines: 1, fill: "#111", family: uiFont)
-            body += text(row.right, x: rowX + 26, y: y + height / 2 + 46, size: 21, weight: "550", fill: "#666", family: uiFont)
+            body += wrapped(row.left, x: rowX + 26, y: y + height / 2 - 4, width: rowWidth - 52, size: 34, maxLines: 1, fill: "#111", family: uiFont)
+            body += text(row.right, x: rowX + 26, y: y + height / 2 + 48, size: 26, weight: "550", fill: "#555", family: uiFont)
         }
         return body
     }
@@ -2880,12 +2921,12 @@ struct SVGRenderer {
         let labelWidth = 154
         let cardWidth = (width - labelWidth - gap * 2) / controls.count
         var body = ""
-        body += text("播放控制", x: x, y: y + height / 2 + 8, size: 24, weight: "650", fill: "#666", family: uiFont)
+        body += text("播放控制", x: x, y: y + height / 2 + 8, size: 28, weight: "650", fill: "#555", family: uiFont)
         for (index, control) in controls.enumerated() {
             let cardX = x + labelWidth + index * (cardWidth + gap)
             body += roundedRect(x: cardX, y: y, width: cardWidth, height: height, radius: 28, fill: index == 1 ? "#111" : "#f5f5f6", stroke: index == 1 ? nil : "#dedee0", strokeWidth: index == 1 ? 0 : 2)
-            body += centeredText(control.0, centerX: cardX + cardWidth / 2, y: y + height / 2, size: 30, weight: "720", fill: index == 1 ? "#fff" : "#111", family: uiFont)
-            body += centeredText(control.1, centerX: cardX + cardWidth / 2, y: y + height / 2 + 54, size: 20, weight: "550", fill: index == 1 ? "#aaa" : "#666", family: uiFont)
+            body += centeredText(control.0, centerX: cardX + cardWidth / 2, y: y + height / 2, size: 34, weight: "720", fill: index == 1 ? "#fff" : "#111", family: uiFont)
+            body += centeredText(control.1, centerX: cardX + cardWidth / 2, y: y + height / 2 + 54, size: 26, weight: "550", fill: index == 1 ? "#bbb" : "#555", family: uiFont)
         }
         return body
     }
@@ -2899,8 +2940,8 @@ struct SVGRenderer {
         var body = landscapeInfoStrip(x: x, y: y, width: width, height: statHeight, metrics: details)
         if adviceHeight > 0 {
             body += roundedRect(x: x, y: adviceY, width: width, height: adviceHeight, radius: 28, fill: "#111")
-            body += text("出门建议", x: x + 28, y: adviceY + 46, size: 22, weight: "650", fill: "#aaa", family: uiFont)
-            body += wrapped(weatherAdvice, x: x + 176, y: adviceY + adviceHeight / 2 + 12, width: width - 206, size: 34, maxLines: 1, fill: "#fff", family: uiFont)
+            body += text("出门建议", x: x + 28, y: adviceY + 46, size: 28, weight: "650", fill: "#bbb", family: uiFont)
+            body += wrapped(weatherAdvice, x: x + 190, y: adviceY + adviceHeight / 2 + 12, width: width - 220, size: 38, maxLines: 1, fill: "#fff", family: uiFont)
         }
         return body
     }
@@ -2919,10 +2960,10 @@ struct SVGRenderer {
             if index > 0 {
                 body += "<line x1=\"\(columnX)\" y1=\"\(y + 28)\" x2=\"\(columnX)\" y2=\"\(y + height - 28)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
             }
-            body += centeredText(hour.time, centerX: centerX, y: y + 60, size: 23, weight: "650", fill: "#666", family: uiFont)
+            body += centeredText(hour.time, centerX: centerX, y: y + 60, size: 28, weight: "650", fill: "#555", family: uiFont)
             body += weatherIcon(condition: hour.condition, cx: centerX, cy: y + 148, size: 92)
             body += centeredText(compactTemperature(hour.temperature), centerX: centerX, y: y + 248, size: 43, weight: "720", family: uiFont)
-            body += centeredText(hour.condition.label, centerX: centerX, y: y + 302, size: 23, weight: "600", fill: "#666", family: uiFont)
+            body += centeredText(hour.condition.label, centerX: centerX, y: y + 302, size: 28, weight: "600", fill: "#555", family: uiFont)
             body += centeredText("\(hour.rainChance)%", centerX: centerX, y: y + 382, size: 33, weight: "700", family: uiFont)
             body += progressBar(x: columnX + 24, y: y + 408, width: columnWidth - 48, height: 10, value: "\(hour.rainChance)%")
         }
@@ -2943,30 +2984,30 @@ struct SVGRenderer {
         body += roundedRect(x: weatherX, y: y + 16, width: 262, height: 168, radius: 32, fill: "#f1f1f3")
         body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: weatherX + 70, cy: y + 92, size: 82)
         body += centeredText(weather.temperature, centerX: weatherX + 188, y: y + 94, size: 50, weight: "700", family: uiFont)
-        body += centeredText("\(weather.condition) · \(humiditySummary())", centerX: weatherX + 188, y: y + 141, size: 23, weight: "600", fill: "#666", family: uiFont)
+        body += centeredText("\(weather.condition) · \(humiditySummary())", centerX: weatherX + 188, y: y + 141, size: 28, weight: "600", fill: "#555", family: uiFont)
 
         body += roundedRect(x: x, y: y + 236, width: width, height: 154, radius: 30, fill: "#111")
-        body += text(metricValue("降雨", fallback: "天气提醒"), x: x + 36, y: y + 284, size: 25, weight: "650", fill: "#fff", family: uiFont)
+        body += text(metricValue("降雨", fallback: "天气提醒"), x: x + 36, y: y + 284, size: 28, weight: "650", fill: "#fff", family: uiFont)
         body += wrapped(metricValue("出门建议", fallback: "天气稍后更新"), x: x + 36, y: y + 346, width: width - 72, size: 44, maxLines: 1, fill: "#fff", family: uiFont)
 
-        body += text("正在处理", x: x, y: y + 458, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += text("正在处理", x: x, y: y + 458, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += roundedRect(x: x, y: y + 486, width: width, height: 294, radius: 34, fill: "#f1f1f3")
         body += roundedRect(x: x + 32, y: y + 518, width: 126, height: 46, radius: 23, fill: "#111")
         body += "<circle cx=\"\(x + 57)\" cy=\"\(y + 541)\" r=\"6\" fill=\"#fff\"/>"
-        body += text("Codex", x: x + 76, y: y + 550, size: 22, weight: "650", fill: "#fff", family: uiFont)
+        body += text("Codex", x: x + 76, y: y + 550, size: 26, weight: "650", fill: "#fff", family: uiFont)
         body += wrapped(task, x: x + 32, y: y + 636, width: width - 64, size: 51, maxLines: 1, fill: "#111", family: uiFont)
         body += "<line x1=\"\(x + 32)\" y1=\"\(y + 689)\" x2=\"\(x + width - 32)\" y2=\"\(y + 689)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
-        body += text("5 小时额度", x: x + 32, y: y + 735, size: 24, weight: "600", fill: "#666", family: uiFont)
+        body += text("5 小时额度", x: x + 32, y: y + 735, size: 28, weight: "600", fill: "#555", family: uiFont)
         body += text(fiveHour, x: x + 208, y: y + 736, size: 29, weight: "700", family: uiFont)
         body += progressBar(x: x + 288, y: y + 717, width: 230, height: 18, value: fiveHour)
-        body += text("周额度", x: x + 582, y: y + 735, size: 24, weight: "600", fill: "#666", family: uiFont)
+        body += text("周额度", x: x + 582, y: y + 735, size: 28, weight: "600", fill: "#555", family: uiFont)
         body += text(weekly, x: x + 720, y: y + 736, size: 29, weight: "700", family: uiFont)
 
-        body += text("设备状态", x: x, y: y + 848, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += text("设备状态", x: x, y: y + 848, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += roundedRect(x: x, y: y + 876, width: width, height: 292, radius: 34, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
         body += "<circle cx=\"\(x + 40)\" cy=\"\(y + 926)\" r=\"12\" fill=\"#111\"/>"
         body += text(metricValue("Mac", fallback: "Mac 状态不可用"), x: x + 68, y: y + 936, size: 34, weight: "680", family: uiFont)
-        body += rightText("刚刚更新", rightX: x + width - 32, y: y + 936, size: 25, weight: "600", fill: "#666", family: uiFont)
+        body += rightText("刚刚更新", rightX: x + width - 32, y: y + 936, size: 28, weight: "600", fill: "#555", family: uiFont)
         body += "<line x1=\"\(x + 32)\" y1=\"\(y + 976)\" x2=\"\(x + width - 32)\" y2=\"\(y + 976)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
         let deviceMetrics = [
             ("CPU", compactSystemValue(Metric(label: "CPU", value: metricValue("CPU", fallback: "--"), emphasis: false))),
@@ -2975,7 +3016,7 @@ struct SVGRenderer {
         ]
         for (index, metric) in deviceMetrics.enumerated() {
             let columnX = x + 32 + index * 300
-            body += text(metric.0, x: columnX, y: y + 1030, size: 23, weight: "600", fill: "#666", family: uiFont)
+            body += text(metric.0, x: columnX, y: y + 1030, size: 28, weight: "600", fill: "#555", family: uiFont)
             body += text(metric.1.replacingOccurrences(of: "使用 ", with: ""), x: columnX, y: y + 1082, size: 42, weight: "700", family: uiFont)
         }
         return body
@@ -2995,33 +3036,33 @@ struct SVGRenderer {
         body += text("Codex", x: x - 4, y: y + 148, size: 96, weight: "720", family: uiFont)
         body += roundedRect(x: x + width - 176, y: y + 52, width: 176, height: 58, radius: 29, fill: "#f1f1f3")
         body += "<circle cx=\"\(x + width - 142)\" cy=\"\(y + 81)\" r=\"8\" fill=\"#111\"/>"
-        body += text("处理中", x: x + width - 118, y: y + 91, size: 24, weight: "650", family: uiFont)
+        body += text("处理中", x: x + width - 118, y: y + 91, size: 28, weight: "650", family: uiFont)
 
         body += roundedRect(x: x, y: y + 196, width: width, height: 330, radius: 36, fill: "#111")
-        body += text("正在处理", x: x + 40, y: y + 254, size: 25, weight: "650", fill: "#bbb", family: uiFont)
+        body += text("正在处理", x: x + 40, y: y + 254, size: 30, weight: "650", fill: "#ccc", family: uiFont)
         body += wrapped(task, x: x + 40, y: y + 344, width: width - 300, size: 55, maxLines: 2, fill: "#fff", family: uiFont)
         body += "<line x1=\"\(x + 40)\" y1=\"\(y + 460)\" x2=\"\(x + width - 40)\" y2=\"\(y + 460)\" stroke=\"#444\" stroke-width=\"2\"/>"
-        body += text(limitStatus, x: x + 40, y: y + 500, size: 23, weight: "600", fill: "#bbb", family: uiFont)
+        body += text(limitStatus, x: x + 40, y: y + 500, size: 28, weight: "600", fill: "#ccc", family: uiFont)
 
-        body += text("额度", x: x, y: y + 600, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += text("额度", x: x, y: y + 600, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += roundedRect(x: x, y: y + 628, width: width, height: 262, radius: 34, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
         let half = width / 2
         body += "<line x1=\"\(x + half)\" y1=\"\(y + 664)\" x2=\"\(x + half)\" y2=\"\(y + 852)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
-        body += text("5 小时", x: x + 36, y: y + 686, size: 24, weight: "600", fill: "#666", family: uiFont)
+        body += text("5 小时", x: x + 36, y: y + 686, size: 28, weight: "600", fill: "#555", family: uiFont)
         body += text(fiveHour, x: x + 36, y: y + 756, size: 58, weight: "720", family: uiFont)
         body += progressBar(x: x + 196, y: y + 720, width: 258, height: 22, value: fiveHour)
-        body += text("重置：\(fiveReset)", x: x + 36, y: y + 834, size: 23, weight: "500", fill: "#666", family: uiFont)
-        body += text("本周", x: x + half + 42, y: y + 686, size: 24, weight: "600", fill: "#666", family: uiFont)
+        body += text("重置：\(fiveReset)", x: x + 36, y: y + 834, size: 28, weight: "500", fill: "#555", family: uiFont)
+        body += text("本周", x: x + half + 42, y: y + 686, size: 28, weight: "600", fill: "#555", family: uiFont)
         body += text(weekly, x: x + half + 42, y: y + 756, size: 58, weight: "720", family: uiFont)
         body += progressBar(x: x + half + 202, y: y + 720, width: 238, height: 22, value: weekly)
-        body += text("重置：\(weeklyReset)", x: x + half + 42, y: y + 834, size: 23, weight: "500", fill: "#666", family: uiFont)
+        body += text("重置：\(weeklyReset)", x: x + half + 42, y: y + 834, size: 28, weight: "500", fill: "#555", family: uiFont)
 
-        body += text("下一步", x: x, y: y + 960, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += text("下一步", x: x, y: y + 960, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += roundedRect(x: x, y: y + 988, width: width, height: 196, radius: 34, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
         body += "<circle cx=\"\(x + 52)\" cy=\"\(y + 1048)\" r=\"22\" fill=\"#111\"/>"
         body += "<path d=\"M \(x + 42) \(y + 1048) l 7 8 l 15 -18\" fill=\"none\" stroke=\"#fff\" stroke-width=\"5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
         body += wrapped(nextStep, x: x + 96, y: y + 1061, width: width - 136, size: 39, maxLines: 1, fill: "#111", family: uiFont)
-        body += text("完成后再切换任务", x: x + 96, y: y + 1114, size: 26, weight: "550", fill: "#666", family: uiFont)
+        body += text("完成后再切换任务", x: x + 96, y: y + 1114, size: 30, weight: "550", fill: "#555", family: uiFont)
         return body
     }
 
@@ -3107,10 +3148,10 @@ struct SVGRenderer {
 
         let rain = metricValue("降雨", fallback: "降雨待更新")
         body += roundedRect(x: x, y: y + 344, width: width, height: 150, radius: 30, fill: "#111")
-        body += text(rain, x: x + 36, y: y + 392, size: 24, weight: "650", fill: "#fff", family: uiFont)
+        body += text(rain, x: x + 36, y: y + 392, size: 28, weight: "650", fill: "#fff", family: uiFont)
         body += wrapped(weatherAdvice, x: x + 36, y: y + 452, width: width - 72, size: 43, maxLines: 1, fill: "#fff", family: uiFont)
 
-        body += text("接下来", x: x, y: y + 572, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += text("接下来", x: x, y: y + 572, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += appleWeatherTimeline(x: x, y: y + 600, width: width, bottom: bottom)
         return body
     }
@@ -3131,28 +3172,29 @@ struct SVGRenderer {
         )
         body += modeArt(cx: x + width - 76, cy: y + 74)
 
-        body += roundedRect(x: x, y: y + 182, width: width, height: 158, radius: 32, fill: "#111")
-        body += text("\(day)", x: x + 32, y: y + 302, size: 116, weight: "740", fill: "#fff", family: uiFont)
-        body += text(TraditionalCalendar.weekSummary(model.generatedAt), x: x + 214, y: y + 244, size: 31, weight: "680", fill: "#fff", family: uiFont)
-        body += text(TraditionalCalendar.lunarDateText(model.generatedAt), x: x + 214, y: y + 296, size: 35, weight: "650", fill: "#ddd", family: uiFont)
+        body += roundedRect(x: x, y: y + 182, width: width, height: 180, radius: 32, fill: "#111")
+        body += text("\(day)", x: x + 32, y: y + 320, size: 128, weight: "740", fill: "#fff", family: uiFont)
+        body += text(DashboardData.clockTime(model.generatedAt), x: x + 214, y: y + 260, size: 70, weight: "740", fill: "#fff", family: monoFont)
+        body += text(TraditionalCalendar.weekSummary(model.generatedAt), x: x + 560, y: y + 246, size: 31, weight: "680", fill: "#fff", family: uiFont)
+        body += text(TraditionalCalendar.lunarDateText(model.generatedAt), x: x + 560, y: y + 308, size: 35, weight: "650", fill: "#ddd", family: uiFont)
 
         body += monthCalendarGrid(
             date: model.generatedAt,
             x: x,
-            y: y + 366,
+            y: y + 390,
             width: width,
-            rowHeight: 80,
-            daySize: 36,
-            secondarySize: 18
+            rowHeight: 90,
+            daySize: 40,
+            secondarySize: 22
         )
 
-        body += roundedRect(x: x, y: y + 956, width: width, height: 126, radius: 28, fill: "#f1f1f3")
-        body += text("节气", x: x + 28, y: y + 1001, size: 23, weight: "650", fill: "#666", family: uiFont)
-        body += wrapped(TraditionalCalendar.solarTermSummary(model.generatedAt), x: x + 28, y: y + 1052, width: width - 56, size: 32, maxLines: 1, fill: "#111", family: uiFont)
+        body += roundedRect(x: x, y: y + 978, width: width, height: 138, radius: 28, fill: "#f1f1f3")
+        body += text("当前节气", x: x + 28, y: y + 1028, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += wrapped(TraditionalCalendar.solarTermSummary(model.generatedAt), x: x + 190, y: y + 1070, width: width - 218, size: 34, maxLines: 1, fill: "#111", family: uiFont)
 
-        body += roundedRect(x: x, y: y + 1108, width: width, height: 118, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
-        body += text("年度进度", x: x + 28, y: y + 1150, size: 23, weight: "650", fill: "#666", family: uiFont)
-        body += wrapped(TraditionalCalendar.yearProgressSummary(model.generatedAt), x: x + 28, y: y + 1198, width: width - 56, size: 30, maxLines: 1, fill: "#111", family: uiFont)
+        body += roundedRect(x: x, y: y + 1138, width: width, height: 110, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += text("年度进度", x: x + 28, y: y + 1182, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += wrapped(compactYearProgressSummary(model.generatedAt), x: x + 190, y: y + 1218, width: width - 218, size: 32, maxLines: 1, fill: "#111", family: uiFont)
         return body
     }
 
@@ -3199,7 +3241,7 @@ struct SVGRenderer {
         var body = ""
         body += text(title, x: x, y: y + 94, size: 88, weight: "700")
         if !subtitle.isEmpty {
-            body += text(subtitle, x: x + 2, y: y + 148, size: 30, weight: "400", family: "Menlo, Monaco, monospace")
+            body += text(subtitle, x: x + 2, y: y + 148, size: 32, weight: "500", family: "Menlo, Monaco, monospace")
         }
         return body
     }
@@ -3266,6 +3308,19 @@ struct SVGRenderer {
             .filter { calendar.component(.month, from: $0.date) == month }
             .map { "\($0.name) \(formatter.string(from: $0.date))" }
         return terms.isEmpty ? "本月无节气数据" : terms.joined(separator: " · ")
+    }
+
+    private func compactSolarTermSummary(_ date: Date) -> String {
+        let summary = TraditionalCalendar.solarTermSummary(date)
+        guard let distanceRange = summary.range(of: "距") else { return summary }
+        return String(summary[distanceRange.lowerBound...])
+    }
+
+    private func compactYearProgressSummary(_ date: Date) -> String {
+        TraditionalCalendar.yearProgressSummary(date)
+            .replacingOccurrences(of: "全年第", with: "第")
+            .replacingOccurrences(of: "已过", with: "")
+            .replacingOccurrences(of: "还剩", with: "剩")
     }
 
     private func weatherSummary(_ value: String) -> (condition: String, temperature: String) {
@@ -3357,7 +3412,7 @@ struct SVGRenderer {
         width: Int,
         rowHeight: Int = 78,
         daySize: Int = 42,
-        secondarySize: Int = 17
+        secondarySize: Int = 22
     ) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = Locale(identifier: "zh_CN")
@@ -3372,7 +3427,7 @@ struct SVGRenderer {
         let weekdays = ["一", "二", "三", "四", "五", "六", "日"]
         var body = ""
         for (index, weekday) in weekdays.enumerated() {
-            body += centeredText(weekday, centerX: x + columnWidth * index + columnWidth / 2, y: y + 36, size: 24, weight: "700", fill: index >= 5 ? "#555" : "#333", family: uiFont)
+            body += centeredText(weekday, centerX: x + columnWidth * index + columnWidth / 2, y: y + 36, size: 28, weight: "700", fill: index >= 5 ? "#555" : "#333", family: uiFont)
         }
         body += line(x1: x, y1: y + 56, x2: x + width, y2: y + 56, stroke: 2)
 
@@ -3435,7 +3490,7 @@ struct SVGRenderer {
         maxLines: Int = 2
     ) -> String {
         var body = rect(x: x, y: y, width: width, height: height, stroke: 0, fill: "#111")
-        body += text(label, x: x + 32, y: y + 48, size: 27, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
+        body += text(label, x: x + 32, y: y + 48, size: 30, weight: "700", fill: "#fff", family: "Menlo, Monaco, monospace")
         body += wrapped(value, x: x + 32, y: y + 112, width: width - 64, size: valueSize, maxLines: maxLines, fill: "#fff")
         return body
     }
@@ -3452,7 +3507,7 @@ struct SVGRenderer {
             if index > 0 {
                 body += line(x1: columnX, y1: y + 26, x2: columnX, y2: y + height - 26, stroke: 2)
             }
-            body += text(metric.label, x: columnX + 24, y: y + 58, size: 27, weight: "700", family: "Menlo, Monaco, monospace")
+            body += text(metric.label, x: columnX + 24, y: y + 58, size: 30, weight: "700", family: "Menlo, Monaco, monospace")
             body += wrapped(metric.value, x: columnX + 24, y: y + 126, width: columnWidth - 48, size: 42, maxLines: 2)
         }
         return body
@@ -3468,8 +3523,8 @@ struct SVGRenderer {
             if index > 0 {
                 body += line(x1: columnX, y1: y + 18, x2: columnX, y2: y + height - 18, stroke: 2)
             }
-            body += text(metric.label, x: columnX + 20, y: y + 54, size: 24, weight: "700", family: "Menlo, Monaco, monospace")
-            body += wrapped(metric.value, x: columnX + 20, y: y + 118, width: columnWidth - 36, size: 36, maxLines: 1)
+            body += text(metric.label, x: columnX + 20, y: y + 54, size: 28, weight: "700", family: "Menlo, Monaco, monospace")
+            body += wrapped(metric.value, x: columnX + 20, y: y + 118, width: columnWidth - 36, size: 40, maxLines: 1)
         }
         return body
     }
@@ -3515,10 +3570,10 @@ struct SVGRenderer {
             if index > 0 {
                 body += "<line x1=\"\(x + 32)\" y1=\"\(rowTop)\" x2=\"\(x + width - 32)\" y2=\"\(rowTop)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
             }
-            body += text(hour.time, x: x + 34, y: baseline, size: 27, weight: "700", family: monoFont)
+            body += text(hour.time, x: x + 34, y: baseline, size: 30, weight: "700", family: monoFont)
             body += weatherIcon(condition: hour.condition, cx: x + 220, cy: rowTop + rowHeight / 2, size: 70)
             body += text("\(hour.condition.label) \(compactTemperature(hour.temperature))", x: x + 286, y: baseline, size: 34, weight: "650", family: uiFont)
-            body += rightText("\(hour.rainChance)%", rightX: x + width - 60, y: baseline - 12, size: 27, weight: "700", family: uiFont)
+            body += rightText("\(hour.rainChance)%", rightX: x + width - 60, y: baseline - 12, size: 30, weight: "700", family: uiFont)
             body += progressBar(x: x + width - 240, y: baseline + 7, width: 182, height: 9, value: "\(hour.rainChance)%")
         }
         return body
@@ -3596,7 +3651,7 @@ struct SVGRenderer {
                 x: x,
                 y: rowTop + 54,
                 width: width,
-                size: isHeading ? 38 : 32,
+                size: isHeading ? 42 : 36,
                 maxLines: 2,
                 fill: "#111",
                 family: uiFont
@@ -3910,7 +3965,7 @@ final class DashboardServer: @unchecked Sendable {
             return redirect()
         }
         if cleanPath == "/orientation/toggle" {
-            let next: KindleOrientation = state.snapshot().orientation == .portrait ? .landscapeClockwise : .portrait
+            let next: KindleOrientation = state.snapshot().orientation == .portrait ? .landscape : .portrait
             state.setOrientation(next)
             return redirect()
         }
@@ -3919,7 +3974,17 @@ final class DashboardServer: @unchecked Sendable {
             return redirect()
         }
         if cleanPath == "/orientation/landscape" {
-            state.setOrientation(.landscapeClockwise)
+            state.setOrientation(.landscape)
+            return redirect()
+        }
+        if cleanPath == "/orientation/landscape/clockwise" {
+            state.setOrientation(.landscape)
+            state.setLandscapeDirection(.clockwise)
+            return redirect()
+        }
+        if cleanPath == "/orientation/landscape/counterclockwise" {
+            state.setOrientation(.landscape)
+            state.setLandscapeDirection(.counterClockwise)
             return redirect()
         }
         if cleanPath == "/cycle/toggle" {
@@ -3961,7 +4026,11 @@ final class DashboardServer: @unchecked Sendable {
         }
         if cleanPath == "/frame.png" || cleanPath == "/native.png" {
             let svg = SVGRenderer(model: model).svg()
-            if let data = pngData(fromSVG: svg) {
+            let deviceRotationDegrees =
+                cleanPath == "/frame.png" && snapshot.orientation == .landscape
+                ? snapshot.landscapeDirection.devicePNGRotationDegreesClockwise
+                : nil
+            if let data = pngData(fromSVG: svg, deviceRotationDegreesClockwise: deviceRotationDegrees) {
                 return http(data: data, status: "200 OK", contentType: "image/png")
             }
             return http(body: "PNG render failed\n", status: "500 Internal Server Error", contentType: "text/plain; charset=utf-8")
@@ -3975,7 +4044,7 @@ final class DashboardServer: @unchecked Sendable {
 
     private func controlJSON(_ snapshot: AppSnapshot) -> String {
         """
-        {"refreshSerial":\(snapshot.refreshSerial),"orientation":"\(snapshot.orientation.rawValue)","refreshInterval":\(snapshot.lightRefreshInterval),"lightRefreshInterval":\(snapshot.lightRefreshInterval),"fullRefreshInterval":\(snapshot.fullRefreshInterval),"frontlightEnabled":\(snapshot.frontlightEnabled ? "true" : "false"),"frontlightLevel":\(snapshot.frontlightLevel),"batteryProtectionEnabled":\(snapshot.batteryProtectionEnabled ? "true" : "false"),"batteryLowerLimit":\(snapshot.batteryLowerLimit),"batteryUpperLimit":\(snapshot.batteryUpperLimit)}
+        {"refreshSerial":\(snapshot.refreshSerial),"orientation":"\(snapshot.orientation.rawValue)","landscapeDirection":"\(snapshot.landscapeDirection.rawValue)","refreshInterval":\(snapshot.lightRefreshInterval),"lightRefreshInterval":\(snapshot.lightRefreshInterval),"fullRefreshInterval":\(snapshot.fullRefreshInterval),"frontlightEnabled":\(snapshot.frontlightEnabled ? "true" : "false"),"frontlightLevel":\(snapshot.frontlightLevel),"batteryProtectionEnabled":\(snapshot.batteryProtectionEnabled ? "true" : "false"),"batteryLowerLimit":\(snapshot.batteryLowerLimit),"batteryUpperLimit":\(snapshot.batteryUpperLimit)}
         """
     }
 
@@ -4024,22 +4093,40 @@ final class DashboardServer: @unchecked Sendable {
         return data
     }
 
-    private func pngData(fromSVG svg: String) -> Data? {
+    private func pngData(fromSVG svg: String, deviceRotationDegreesClockwise: Int? = nil) -> Data? {
         let id = UUID().uuidString
         let directory = FileManager.default.temporaryDirectory
         let svgURL = directory.appendingPathComponent("kindledashboard-\(id).svg")
         let pngURL = directory.appendingPathComponent("kindledashboard-\(id).png")
+        let devicePNGURL = directory.appendingPathComponent("kindledashboard-\(id)-device.png")
         defer {
             try? FileManager.default.removeItem(at: svgURL)
             try? FileManager.default.removeItem(at: pngURL)
+            try? FileManager.default.removeItem(at: devicePNGURL)
         }
         do {
             try svg.write(to: svgURL, atomically: true, encoding: .utf8)
         } catch {
             return nil
         }
-        _ = CommandRunner.run("/usr/bin/sips", ["-s", "format", "png", svgURL.path, "--out", pngURL.path])
-        return try? Data(contentsOf: pngURL)
+        let renderResult = CommandRunner.runResult(
+            "/usr/bin/sips",
+            ["-s", "format", "png", svgURL.path, "--out", pngURL.path]
+        )
+        guard renderResult.status == 0 else {
+            return nil
+        }
+        guard let rotationDegrees = deviceRotationDegreesClockwise else {
+            return try? Data(contentsOf: pngURL)
+        }
+        let rotateResult = CommandRunner.runResult(
+            "/usr/bin/sips",
+            ["-r", "\(rotationDegrees)", pngURL.path, "--out", devicePNGURL.path]
+        )
+        guard rotateResult.status == 0 else {
+            return nil
+        }
+        return try? Data(contentsOf: devicePNGURL)
     }
 
     private func kindleClientScript() -> String {
@@ -4145,6 +4232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var modeMenuItems: [NSMenuItem] = []
     private var portraitMenuItem: NSMenuItem?
     private var landscapeMenuItem: NSMenuItem?
+    private var landscapeDirectionMenuItems: [NSMenuItem] = []
     private var lightRefreshMenuItems: [NSMenuItem] = []
     private var fullRefreshMenuItems: [NSMenuItem] = []
     private var cycleMenuItems: [NSMenuItem] = []
@@ -4169,6 +4257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         modeMenuItems.removeAll()
         portraitMenuItem = nil
         landscapeMenuItem = nil
+        landscapeDirectionMenuItems.removeAll()
         lightRefreshMenuItems.removeAll()
         fullRefreshMenuItems.removeAll()
         cycleMenuItems.removeAll()
@@ -4236,6 +4325,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let landscape = menuItem("横屏布局", #selector(selectLandscape), symbol: "rectangle")
         landscapeMenuItem = landscape
         settingsMenu.addItem(landscape)
+        let landscapeDirection = NSMenuItem(title: "横屏放置方向", action: nil, keyEquivalent: "")
+        landscapeDirection.image = symbolImage("rotate.right")
+        let landscapeDirectionMenu = NSMenu()
+        for direction in KindleLandscapeDirection.allCases {
+            let item = menuItem(direction.title, #selector(selectLandscapeDirection(_:)), symbol: direction == .clockwise ? "rotate.right" : "rotate.left")
+            item.representedObject = direction.rawValue
+            landscapeDirectionMenuItems.append(item)
+            landscapeDirectionMenu.addItem(item)
+        }
+        landscapeDirection.submenu = landscapeDirectionMenu
+        settingsMenu.addItem(landscapeDirection)
         settingsMenu.addItem(.separator())
         let settingsRefreshRate = NSMenuItem(title: "刷新策略", action: nil, keyEquivalent: "")
         settingsRefreshRate.image = symbolImage("timer")
@@ -4345,7 +4445,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func selectLandscape() {
-        state.setOrientation(.landscapeClockwise)
+        state.setOrientation(.landscape)
+        updateTitle()
+    }
+
+    @objc private func selectLandscapeDirection(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let direction = KindleLandscapeDirection(rawValue: raw) else {
+            return
+        }
+        state.setOrientation(.landscape)
+        state.setLandscapeDirection(direction)
         updateTitle()
     }
 
@@ -4522,8 +4632,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         portraitMenuItem?.title = menuTitle("竖屏布局", status: snapshot.orientation == .portrait ? "生效" : "")
         portraitMenuItem?.state = snapshot.orientation == .portrait ? .on : .off
-        landscapeMenuItem?.title = menuTitle("横屏布局", status: snapshot.orientation == .landscapeClockwise ? "生效" : "")
-        landscapeMenuItem?.state = snapshot.orientation == .landscapeClockwise ? .on : .off
+        landscapeMenuItem?.title = menuTitle("横屏布局", status: snapshot.orientation == .landscape ? "生效" : "")
+        landscapeMenuItem?.state = snapshot.orientation == .landscape ? .on : .off
+        for item in landscapeDirectionMenuItems {
+            guard let raw = item.representedObject as? String,
+                  let direction = KindleLandscapeDirection(rawValue: raw) else {
+                continue
+            }
+            item.title = menuTitle(direction.title, status: direction == snapshot.landscapeDirection ? "当前" : "")
+            item.state = direction == snapshot.landscapeDirection ? .on : .off
+        }
 
         for item in lightRefreshMenuItems {
             guard let seconds = item.representedObject as? Int else { continue }
@@ -4747,7 +4865,7 @@ private func writeApplicationIcon(to path: String) -> Bool {
 }
 
 private let commandLineOrientation: KindleOrientation = CommandLine.arguments.contains("--landscape")
-    ? .landscapeClockwise
+    ? .landscape
     : .portrait
 
 if CommandLine.arguments.contains("--dump-home-svg") {

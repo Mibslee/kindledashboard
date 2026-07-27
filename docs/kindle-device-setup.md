@@ -141,12 +141,12 @@ The Kindle reports its own battery level back to the Mac through `/kindle/status
 
 ## Portrait and Landscape
 
-The Mac control payload includes the selected orientation:
+The Mac control payload includes the selected layout:
 
-- `portrait` renders `1072 × 1448` and requests the Kindle `U` orientation.
-- `landscapeClockwise` renders `1448 × 1072` and requests the Kindle `R` orientation.
+- `portrait` composes and serves a `1072 × 1448` Kindle frame.
+- `landscape` composes a native `1448 × 1072` landscape page, then rotates only the final `/frame.png` into the Kindle's fixed `1072 × 1448` framebuffer.
 
-`start.sh` records the orientation that was active before Dashboard startup. `stop.sh` restores that value when Dashboard stops, so using the landscape layout does not permanently change the device orientation. FBInk does not perform general software rotation; device-side orientation and frame dimensions must therefore agree.
+The Kindle extension never changes or detects the Kindle system orientation. Its framebuffer always remains portrait-shaped. In the Mac menu, choose `设置 → 横屏放置方向 → 顺时针横放 / 逆时针横放`; the Mac applies the opposite pre-rotation to the final device PNG so the page is upright after you manually turn the Kindle. `/native.png` remains the unrotated `1448 × 1072` composition for preview and QA; `/frame.png` is always the fixed-resolution device payload.
 
 ## Battery Protection
 
@@ -154,7 +154,7 @@ Battery protection is controlled by the Mac app and executed by the Kindle backg
 
 Default:
 
-- Disabled.
+- Enabled with a 45%–55% charge window on a fresh Mac App installation.
 
 When enabled:
 

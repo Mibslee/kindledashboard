@@ -48,6 +48,9 @@ awk -v server="http://$MAC_IP:8787" '
 mv "$TMP_CONFIG" "$CONFIG"
 
 chmod +x "$DST"/bin/*.sh
+# v0.4.0 briefly persisted winmgr state while experimenting with hardware
+# rotation. Device frames are now always fixed at 1072x1448.
+rm -f "$DST/orientation.before-dashboard"
 find "$DST" -name '._*' -delete 2>/dev/null || true
 sync
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Keep the Kindle framebuffer fixed at `1072 × 1448` in every mode. Landscape now uses its independent `1448 × 1072` composition and rotates only the final device PNG, without changing or detecting Kindle system orientation.
+- Add a persisted `顺时针横放 / 逆时针横放` direction switch under the Mac rotation settings; counter-clockwise placement is the default.
+- Keep the selected day’s lunar label inside its high-contrast calendar cell and prevent two-line weather/calendar summaries from touching card edges.
+
+### Added
+
+- Show the current time prominently on both portrait and landscape calendar pages.
+
+### Changed
+
+- Recalibrate meaningful UI text, metrics, labels, and supporting information for an approximately one-metre desktop viewing distance.
+- Shorten solar-term and year-progress summaries where space is constrained, preserving information without ellipsis or artificial card stretching.
+- Regenerate all 20 portrait and landscape README screenshots from the latest renderer.
+
 ## v0.4.0 - 2026-07-27
 
 ### Added

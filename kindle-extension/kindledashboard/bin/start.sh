@@ -6,7 +6,6 @@ PID_FILE="$EXT_DIR/kindledashboard.pid"
 LOG_FILE="$EXT_DIR/kindledashboard.log"
 CONTROL_FILE="$EXT_DIR/control.json"
 KIOSK_FLAG="$EXT_DIR/kiosk-statusbar.enabled"
-ORIENTATION_STATE="$EXT_DIR/orientation.before-dashboard"
 CHARGER_DIR="/sys/devices/system/wario_charger/wario_charger0"
 BATTERY_DIR="/sys/devices/system/wario_battery/wario_battery0"
 POWER_BATTERY="/sys/class/power_supply/max77696-battery"
@@ -73,29 +72,11 @@ apply_statusbar_guard() {
   esac
 }
 
-apply_orientation() {
-  case "$1" in
-    landscapeClockwise) target="R" ;;
-    portrait) target="U" ;;
-    *) return 0 ;;
-  esac
-  current="$(lipc-get-prop com.lab126.winmgr orientationLock 2>/dev/null || true)"
-  [ "$current" = "$target" ] && return 0
-  if lipc-set-prop com.lab126.winmgr orientationLock "$target" 2>/dev/null; then
-    echo "orientation changed: ${current:-unknown} -> $target $(date)" >> "$LOG_FILE"
-    sleep 1
-  else
-    echo "orientation change failed: ${current:-unknown} -> $target $(date)" >> "$LOG_FILE"
-  fi
-}
-
 mkdir -p "$EXT_DIR"
 if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   eips 2 2 "KindleDashboard already running"
   exit 0
 fi
-lipc-get-prop com.lab126.winmgr orientationLock > "$ORIENTATION_STATE" 2>/dev/null || true
-
 (
   trap restore_charging EXIT HUP INT TERM
   sleep 8
@@ -117,7 +98,6 @@ lipc-get-prop com.lab126.winmgr orientationLock > "$ORIENTATION_STATE" 2>/dev/nu
       light_interval="$(sed -n 's/.*"lightRefreshInterval":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
       full_interval="$(sed -n 's/.*"fullRefreshInterval":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
       battery_protection="$(sed -n 's/.*"batteryProtectionEnabled":\(true\|false\).*/\1/p' "$CONTROL_FILE")"
-      orientation="$(sed -n 's/.*"orientation":"\([^"]*\)".*/\1/p' "$CONTROL_FILE")"
       battery_lower="$(sed -n 's/.*"batteryLowerLimit":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
       battery_upper="$(sed -n 's/.*"batteryUpperLimit":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
       [ -z "$level" ] && level=10
@@ -137,7 +117,6 @@ lipc-get-prop com.lab126.winmgr orientationLock > "$ORIENTATION_STATE" 2>/dev/nu
       elif [ "$frontlight" = "false" ]; then
         lipc-set-prop com.lab126.powerd flIntensity 0 2>/dev/null || true
       fi
-      apply_orientation "$orientation"
     else
       rm -f "$CONTROL_FILE.tmp"
       echo "control fetch failed $(date)" >> "$LOG_FILE"
