@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.0 - 2026-07-27
+
+### Added
+
+- Added true `1448 × 1072` landscape SVG/PNG output with purpose-built layouts for every dashboard page.
+- Added an offline Chinese dual-calendar model with per-day lunar labels, heavenly-stem/earthly-branch year, zodiac, 24 solar terms, week number, and year progress.
+- Added persisted orientation and battery-protection preferences.
+- Added a CLI landscape-preview option and a solar-term diagnostic dump for visual and date validation.
+
+### Changed
+
+- Redesigned portrait and landscape calendar pages around the current date, lunar context, solar terms, and year progress.
+- Rebalanced landscape pages with purpose-specific lower context: recent Codex work, document reading position, playback controls, weather details, focus environment, and system continuity.
+- Allowed portrait and landscape to use different module sets while keeping shared data semantics and a consistent e-ink visual language.
+- Enabled 45%–55% battery protection by default for a fresh Mac App installation.
+- Kept the last battery-protection policy active while the Mac is temporarily unreachable and restored normal charging when Dashboard stops.
+- Removed schedule and reminder content from the calendar page.
+
+### Removed
+
+- Removed macOS Calendar and Reminders automation and their bundle permission descriptions.
+
 ## v0.3.1 - 2026-07-17
 
 ### Added

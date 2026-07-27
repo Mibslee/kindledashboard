@@ -41,6 +41,22 @@ report_kindle_status() {
   wget -q -O /dev/null "$SERVER/kindle/status?battery=$capacity&charging=$charging" 2>/dev/null || true
 }
 
+apply_orientation() {
+  case "$1" in
+    landscapeClockwise) target="R" ;;
+    portrait) target="U" ;;
+    *) return 0 ;;
+  esac
+  current="$(lipc-get-prop com.lab126.winmgr orientationLock 2>/dev/null || true)"
+  [ "$current" = "$target" ] && return 0
+  if lipc-set-prop com.lab126.winmgr orientationLock "$target" 2>/dev/null; then
+    echo "orientation changed: ${current:-unknown} -> $target $(date)" >> "$LOG"
+    sleep 1
+  else
+    echo "orientation change failed: ${current:-unknown} -> $target $(date)" >> "$LOG"
+  fi
+}
+
 mkdir -p "$EXT_DIR"
 lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null || true
 
@@ -56,12 +72,14 @@ if wget -q -O "$CONTROL_FILE.tmp" "$SERVER/control.json"; then
   mv "$CONTROL_FILE.tmp" "$CONTROL_FILE"
   frontlight="$(sed -n 's/.*"frontlightEnabled":\(true\|false\).*/\1/p' "$CONTROL_FILE")"
   level="$(sed -n 's/.*"frontlightLevel":\([0-9][0-9]*\).*/\1/p' "$CONTROL_FILE")"
+  orientation="$(sed -n 's/.*"orientation":"\([^"]*\)".*/\1/p' "$CONTROL_FILE")"
   [ -z "$level" ] && level=10
   if [ "$frontlight" = "true" ]; then
     lipc-set-prop com.lab126.powerd flIntensity "$level" 2>/dev/null || true
   elif [ "$frontlight" = "false" ]; then
     lipc-set-prop com.lab126.powerd flIntensity 0 2>/dev/null || true
   fi
+  apply_orientation "$orientation"
 else
   rm -f "$CONTROL_FILE.tmp"
 fi
@@ -75,28 +93,33 @@ wget -q -O "$OUT" "$SERVER/frame.png" || {
 }
 
 if [ -x "$FBINK" ]; then
+  render_started="$(date +%s)"
   if [ "$RENDER_MODE" = "light" ]; then
-    "$FBINK" -a -g "file=$OUT" >> "$LOG" 2>&1 || {
+    echo "fbink mode=light waveform=GL16 flash=no clear=no $(date)" >> "$LOG"
+    "$FBINK" -q -W GL16 -a -g "file=$OUT" >> "$LOG" 2>&1 || {
       echo "fbink light failed" >> "$LOG"
       eips 2 2 "KindleDashboard render failed"
       exit 2
     }
   else
+    echo "fbink mode=$RENDER_MODE waveform=GC16 flash=yes clear=yes $(date)" >> "$LOG"
     eips -c 2>/dev/null || true
     sleep 1
-    "$FBINK" -c -f -a -g "file=$OUT" >> "$LOG" 2>&1 || {
+    "$FBINK" -q -W GC16 -c -f -a -g "file=$OUT" >> "$LOG" 2>&1 || {
       echo "fbink full failed" >> "$LOG"
       eips 2 2 "KindleDashboard render failed"
       exit 2
     }
     if [ "$RENDER_MODE" = "deep" ]; then
       sleep 2
-      "$FBINK" -c -f -a -g "file=$OUT" >> "$LOG" 2>&1 || {
+      "$FBINK" -q -W GC16 -c -f -a -g "file=$OUT" >> "$LOG" 2>&1 || {
         echo "fbink deep second pass failed" >> "$LOG"
         exit 2
       }
     fi
   fi
+  render_finished="$(date +%s)"
+  echo "fbink completed mode=$RENDER_MODE duration=$((render_finished - render_started))s $(date)" >> "$LOG"
 else
   echo "fbink missing: $FBINK" >> "$LOG"
   eips 2 2 "FBInk not found"
@@ -104,3 +127,4 @@ else
 fi
 
 echo "render_once done" >> "$LOG"
+wget -q -O /dev/null "$SERVER/kindle/render?mode=$RENDER_MODE" 2>/dev/null || true

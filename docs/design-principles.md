@@ -16,16 +16,20 @@ KindleDashboard is a status board, not a tiny web app.
 - 文档: keep a procedure, checklist, or reference note visible while operating on the Mac.
 - 音乐: see and lightly control playback.
 - 天气: decide clothing, windows, and commute.
-- 日历: avoid missing the next commitment.
+- 日历: understand today, the lunar calendar, and seasonal rhythm without sync.
 - 专注: keep one time block visible.
 - 系统: spot resource pressure without opening Activity Monitor.
 - 屏保: show time quietly when idle.
 
 ## Layout Rules
 
-- Portrait only for now.
-- Large main surface at the top, compact Dock at the bottom.
+- Portrait and landscape are separate compositions, not rotated or scaled copies.
+- Portrait prioritizes vertical reading rhythm; landscape prioritizes side-by-side scanning and a balanced visual center.
+- Portrait and landscape may add, remove, or regroup modules when the viewing context changes.
+- A page should feel complete across the usable canvas, but whitespace must not be filled by mechanically stretching cards, type, or padding.
+- Landscape lower regions should carry useful context, controls, or continuation when the page purpose supports them; deliberate calm screens may remain sparse.
 - No repeated information unless the repeated version has a different use.
 - No raw API strings in primary visual areas.
 - The Dock is status/navigation, not decoration.
 - The document page must preserve scan rhythm: headings, steps, and checkbox states should remain obvious from arm's length.
+- Calendar cells may carry one compact secondary label: a solar term first, otherwise the lunar date.

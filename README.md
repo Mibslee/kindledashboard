@@ -9,39 +9,355 @@
 [![Kindle](https://img.shields.io/badge/Kindle-Paperwhite%203-lightgrey?style=flat-square)](#适配设备)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
-Mac 控制，Kindle 显示。适合放在桌面上显示天气、时间、日程、音乐、Codex 工作状态、Markdown 步骤文档和静态图片。
+Mac 控制，Kindle 显示。适合放在桌面上显示天气、时间、双历、音乐、Codex 工作状态、Markdown 步骤文档和静态图片。
 
 Made by **ShaneStudio**
 
 </div>
 
-![KindleDashboard home preview](docs/assets/previews/home.png)
+![KindleDashboard v0.4.0 landscape home preview](docs/assets/previews/v0.4.0/landscape-home.png)
 
-## v0.3.1 新版截图
+## v0.4.0 横竖双布局
 
-v0.3.1 重新设计了总览、天气和 Codex 页面：使用接近 Apple 系统界面的清晰层级、系统字体、圆角分组和克制灰阶，同时保留适合电子墨水屏的强对比与静态布局。
+v0.4.0 是一次完整的画幅、日历和设备守护升级：
 
-所有截图均由当前版本 App 使用固定示例数据渲染，展示的是 Kindle Paperwhite 3 的实际画布比例，不包含真实日历、Codex 任务、额度或本机状态。
+- 为 Paperwhite 3 增加真正的 `1448 × 1072` 横版渲染，不旋转或缩放竖版页面。
+- 横竖屏共享数据语义和视觉语言，但可以按照画幅特点增加、减少或重组模块。
+- 重新平衡所有横版页面的视觉重心，不用拉高卡片、放大字号或堆叠无效信息填充空白。
+- 日历改为完全本地的中国双历：公历、逐日农历、干支生肖、二十四节气、周次和年度进度。
+- 删除日程、提醒事项和同步逻辑，不再申请 macOS Calendar / Reminders 权限。
+- Mac App 首次启动默认开启 45%–55% Kindle 电池保护，并持久化用户选择。
+- Kindle 扩展根据 Mac 选择切换设备方向，停止 Dashboard 后恢复原来的 Kindle 方向。
+- Kindle 在 Mac 暂时不可达时继续执行最后一次电池保护策略，守护退出时恢复正常充电。
 
-**总览与天气**：一眼判断当前天气、下一段降雨窗口、出门建议、Codex 额度和 Mac 健康。
+> 以下截图全部由 v0.4.0 正式构建使用固定公开示例数据生成，不包含真实 Codex 会话、天气、设备状态或个人信息。竖版为 `1072 × 1448`，横版为 `1448 × 1072`，与 Paperwhite 3 实际输出画布一致。
 
-![总览与天气](docs/assets/previews/daily-dashboard.png)
+### 横竖屏设计原则
 
-**工作流信息牌**：把当前 Codex 工作、专注块和 Mac 系统压力放在独立页面，远看也能读清重点。
+| 约束 | 竖屏 | 横屏 |
+| --- | --- | --- |
+| 阅读方式 | 从上到下逐层阅读 | 左右并行扫视，再读取底部上下文 |
+| 信息密度 | 保留最重要的主信息，减少并列内容 | 可增加与当前页面直接相关的状态、控制或连续性信息 |
+| 模块关系 | 适合单列、纵向节奏 | 适合主次双栏、时间线、指标带和控制区 |
+| 留白 | 给远距离阅读留下清晰分组 | 让内容覆盖完整画幅，但不机械拉伸卡片 |
+| 一致性 | 共享数据、命名、黑白层级和电子墨水对比 | 不要求与竖版模块一一对应 |
+| 例外 | 图片画布按内容比例留白 | 屏保允许有意保持安静和稀疏 |
 
-![Codex、专注与系统](docs/assets/previews/workboard-flow.png)
+设计遵循 Apple Design 的 Purpose、Simplicity 和 Craft：每个新增模块都必须帮助用户判断状态、完成操作或理解上下文；纯装饰内容不会因为屏幕还有空位而被加入。
 
-**桌面陪伴页面**：日历、音乐和低打扰屏保可在 Mac 顶栏随时切换。
+### 完整页面截图
 
-![日历、音乐与屏保](docs/assets/previews/desk-companion.png)
+#### 1. 首页总览
 
-### v0.3.1 更新重点
+首页用于回答“现在最值得关注什么”。竖版保持时间、天气风险、当前 Codex 工作和设备状态的纵向顺序；横版把时间与天气放在左侧，把当前工作和 Mac 健康放在右侧，并在底部加入农历、节气和年度进度。底部信息是一天级别的稳定上下文，不会增加刷新噪声。
 
-- 总览页将时间、天气风险、当前 Codex 工作与 Mac 健康组织成一眼可读的卡片层级。
-- 天气页增加大号当前温度、黑色降雨提醒和带图标、温度、降雨概率的逐时预报。
-- Codex 页突出当前任务、5 小时/周额度进度及下一步操作，并过滤内部会话占位文本。
-- Mac 端可构建为签名的菜单栏 App，支持登录时自动启动，不再依赖常驻终端窗口。
-- 天气数据增加短期缓存、过期标记和多路径重试，临时网络波动时仍可保持可用信息。
+<table>
+  <tr>
+    <th>竖屏 · 快速纵向扫读</th>
+    <th>横屏 · 天气、工作和设备并行</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-home.png" alt="KindleDashboard 首页竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-home.png" alt="KindleDashboard 首页横屏"></td>
+  </tr>
+</table>
+
+横版新增或重组：
+
+- 左侧：时间、当前天气、最重要的降雨或出门建议。
+- 右侧：Codex 当前任务、5 小时/周额度、Mac CPU/内存/温控。
+- 底部：农历日期、下一节气、全年进度。
+- 不加入日程、提醒事项或与当前判断无关的装饰卡片。
+
+#### 2. Codex 工作看板
+
+Codex 页面用于回答“现在在做什么、还能继续多久、下一步是什么”。竖版强调单个任务和额度；横版增加更完整的任务区域、双额度卡、完成标准和最近工作，让更宽的桌面状态牌能提供上下文连续性。
+
+<table>
+  <tr>
+    <th>竖屏 · 当前任务优先</th>
+    <th>横屏 · 任务、额度和最近工作</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-codex.png" alt="KindleDashboard Codex 竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-codex.png" alt="KindleDashboard Codex 横屏"></td>
+  </tr>
+</table>
+
+横版新增或重组：
+
+- 主任务使用高对比黑色区域，远距离也能看到当前工作。
+- 5 小时额度和周额度分别显示，不把不同时间窗口混为一个指标。
+- 下一步和完成标准与任务相邻，减少切换上下文。
+- 底部显示最近工作；没有数据时使用明确空状态，不显示内部占位文本。
+
+#### 3. Markdown 文档
+
+文档页用于在操作 Mac 时把步骤、清单或参考说明常驻在 Kindle 上。竖版沿单列顺序阅读；横版改为阅读器结构：左侧显示页码、阅读进度、剩余页数和翻页入口，右侧使用双栏正文。短文档允许纸面内部自然留白，长文档按页继续，不通过放大文字填满页面。
+
+<table>
+  <tr>
+    <th>竖屏 · 单列步骤</th>
+    <th>横屏 · 阅读状态栏与双栏正文</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-document.png" alt="KindleDashboard 文档竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-document.png" alt="KindleDashboard 文档横屏"></td>
+  </tr>
+</table>
+
+横版新增或重组：
+
+- 独立阅读位置栏：当前页、总页数、进度、剩余页数。
+- 双栏正文按原始 Markdown 顺序分配，保留标题和正文层级。
+- 页面容器覆盖可用阅读画布，但正文不会被拉大到失去可读性。
+- 公开预览使用固定示例文档；实时页面读取用户在 Mac 顶栏选择的内容。
+
+#### 4. 图片与截屏投射
+
+投射页的主任务就是显示图片，因此横竖版都把画布作为唯一主表面，并按 `preserveAspectRatio="xMidYMid meet"` 完整容纳内容。没有图片时显示清晰的操作入口；有图片时不叠加天气、系统状态或其他无关模块。
+
+<table>
+  <tr>
+    <th>竖屏 · 纵向图片画布</th>
+    <th>横屏 · 宽幅图片画布</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-image.png" alt="KindleDashboard 图片投射竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-image.png" alt="KindleDashboard 图片投射横屏"></td>
+  </tr>
+</table>
+
+横竖版共同规则：
+
+- 保持图片比例，不裁掉主要内容。
+- 空状态说明从 Mac 顶栏选择图片或截屏。
+- 主画布可以根据图片比例产生留白，这是内容适配，不是页面未完成。
+- 实际图片会被转换为 Kindle 可显示的 PNG 帧。
+
+#### 5. 音乐
+
+音乐页用于查看当前歌曲并进行轻量控制。竖版把歌曲、专辑和播放状态沿纵向排布；横版将当前歌曲和专辑信息放在上半区，把上一首、播放/暂停、下一首放入独立的底部控制区，避免上方卡片结束后留下没有归属的大块空白。
+
+<table>
+  <tr>
+    <th>竖屏 · 歌曲与专辑</th>
+    <th>横屏 · 播放信息与控制区</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-music.png" alt="KindleDashboard 音乐竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-music.png" alt="KindleDashboard 音乐横屏"></td>
+  </tr>
+</table>
+
+横版新增或重组：
+
+- 当前歌曲是最大视觉重点，播放状态和专辑作为次级信息。
+- 控制区使用三个等权操作位，播放/暂停保持主要强调。
+- 音乐未运行或未播放时显示明确状态，不伪造播放进度。
+- 当前版本读取和控制 macOS Music；不申请日历或提醒事项权限。
+
+#### 6. 天气
+
+天气页用于回答“现在是什么天气、接下来会怎样、要不要调整出行”。竖版按当前天气、风险提醒和逐时预报向下阅读；横版让当前天气和未来五个时间点同时可见，并在底部放置体感、湿度、风、降雨峰值和出门建议。
+
+<table>
+  <tr>
+    <th>竖屏 · 当前天气与逐时列表</th>
+    <th>横屏 · 当前天气、时间线与行动建议</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-weather.png" alt="KindleDashboard 天气竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-weather.png" alt="KindleDashboard 天气横屏"></td>
+  </tr>
+</table>
+
+横版新增或重组：
+
+- 左侧突出当前温度、天气图标、湿度/风和最重要的降雨风险。
+- 右侧并列显示未来五个时间点的天气、温度和降雨概率。
+- 底部指标带补充体感、湿度、风与降雨峰值。
+- 最下方黑色建议区把天气数据转换为可执行提示。
+- 天气不可用时显示稳定空状态，不让旧数据伪装成实时结果。
+
+#### 7. 中国双历
+
+日历页不再读取任何日程，也不需要同步。它用于理解今天、公历月份、农历和季节节律。竖版适合依次读取日期、月历、节气和年度进度；横版把今日信息与整月视图并列，并增加本月两个节气的准确日期。
+
+<table>
+  <tr>
+    <th>竖屏 · 今日、月历和季节信息</th>
+    <th>横屏 · 今日双历与完整月视图</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-calendar.png" alt="KindleDashboard 日历竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-calendar.png" alt="KindleDashboard 日历横屏"></td>
+  </tr>
+</table>
+
+日历数据包括：
+
+- 公历年、月、日、星期与 ISO 风格周次。
+- 每个公历日期下方的农历日期；节气当天优先显示节气名称。
+- 农历月日、干支纪年和生肖。
+- 二十四节气当天提示、上一/下一节气和倒计时。
+- 本月节气名称及公历日期。
+- 全年第几天、已过百分比和剩余天数。
+
+节气通过太阳视黄经计算后转换为本地日期。2026 年 24 个节气已与香港天文台发布的日期逐项核对。日历不包含：
+
+- macOS Calendar 日程。
+- Reminders 提醒事项。
+- CalDAV、iCloud 或其他同步账号。
+- 任何日历/提醒事项权限声明。
+
+#### 8. 专注
+
+专注页只服务一件事：让当前工作在视野中保持稳定。竖版突出任务和建议专注时长；横版同时显示任务、50 分钟专注块和底部执行环境，帮助用户判断是否应该关闭额外页面或休息。
+
+<table>
+  <tr>
+    <th>竖屏 · 单任务状态牌</th>
+    <th>横屏 · 任务、时间块和环境</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-focus.png" alt="KindleDashboard 专注竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-focus.png" alt="KindleDashboard 专注横屏"></td>
+  </tr>
+</table>
+
+横版新增或重组：
+
+- 当前任务和建议时长保持两个独立视觉区域。
+- 底部展示“只做一件事”“关闭额外页面”和 Mac 当前负载。
+- 页面不运行倒计时动画，避免频繁刷新电子墨水屏。
+- 结束提示强调离开屏幕休息，而不是继续增加任务。
+
+#### 9. Mac 系统健康
+
+系统页用于快速判断是否需要打开活动监视器。竖版提供状态、CPU、内存、温控、磁盘和高占用进程；横版增加连续运行信息，并让进程列表延伸到画面下部，使状态与原因形成完整关系。
+
+<table>
+  <tr>
+    <th>竖屏 · 指标与进程列表</th>
+    <th>横屏 · 状态、连续运行和进程原因</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-system.png" alt="KindleDashboard 系统竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-system.png" alt="KindleDashboard 系统横屏"></td>
+  </tr>
+</table>
+
+横版新增或重组：
+
+- 左侧：系统判断、连续运行状态和处理建议。
+- 右侧：CPU、内存、温控及高占用进程。
+- 只有温控、CPU 或内存压力达到阈值时才给出干预建议。
+- 进程信息只显示名称和聚合资源占用，不显示文档内容或用户数据。
+
+#### 10. 低打扰屏保
+
+屏保是有意保持稀疏的页面。竖版和横版都以时间为中心，只保留日期、农历、节气和 Kindle 电量。这里的留白用于降低干扰和残影，不会为了“页面充实”加入天气、任务或系统卡片。
+
+<table>
+  <tr>
+    <th>竖屏 · 纵向安静显示</th>
+    <th>横屏 · 宽幅安静显示</th>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/previews/v0.4.0/portrait-screensaver.png" alt="KindleDashboard 屏保竖屏"></td>
+    <td><img src="docs/assets/previews/v0.4.0/landscape-screensaver.png" alt="KindleDashboard 屏保横屏"></td>
+  </tr>
+</table>
+
+### v0.4.0 完整更新清单
+
+#### 渲染与画幅
+
+- `KindleOrientation` 增加持久化的横竖屏状态。
+- SVG 渲染器按方向输出真实帧：
+  - 竖屏：`1072 × 1448`。
+  - 顺时针横屏：`1448 × 1072`。
+- 十个页面都拥有独立横版布局，不使用整页旋转或等比缩放。
+- 横屏内容统一建立底部连续性，但每页使用与自身用途相关的信息。
+- 图片页继续使用自适应比例画布；屏保继续保留有意留白。
+- CLI 增加 `--landscape`，可与 `--dump-preview`、`--dump-mode` 和实时 SVG 导出配合。
+
+#### 日历与中国传统历法
+
+- 使用 Foundation 中国农历日历生成农历月日。
+- 增加干支纪年和生肖。
+- 计算并显示二十四节气。
+- 月历每个单元格显示一个次级标签：节气优先，否则显示农历日期。
+- 增加下一节气倒计时、本月节气、周次和年度进度。
+- 删除所有 Calendar / Reminders AppleScript、权限描述、日程列表和同步提示。
+- 增加 `--dump-solar-terms <year>` 诊断命令。
+
+#### Mac App
+
+- 新安装默认启用电池保护。
+- 电池保护开关通过 `UserDefaults` 持久化；用户主动关闭后不会被下次启动覆盖。
+- 横竖布局选择通过 `UserDefaults` 持久化。
+- 顶栏设置提供竖屏和横屏选择，并显示当前生效状态。
+- App bundle 不再包含日历和提醒事项隐私说明，只保留音乐控制和截屏所需说明。
+
+#### Kindle 扩展
+
+- `control.json` 增加方向字段。
+- `start.sh` 记录 Dashboard 启动前的 Kindle 方向。
+- 横版请求 Kindle `R` 方向，竖版请求 `U` 方向。
+- `stop.sh` 恢复启动前方向。
+- Mac 暂时不可达时，充电守护继续执行最后收到的保护策略。
+- 充电守护退出或 Dashboard 停止时恢复正常充电。
+- 轻刷新明确使用 `GL16`，全刷新明确使用 `GC16`。
+- 不再向旧 Kindle 驱动传入可能阻塞刷新的 `-w`。
+- 轻刷新和完整刷新的计时保持独立。
+
+#### 文档与验证
+
+- README 增加全部十个页面的横竖屏截图和逐页说明。
+- 设计原则明确禁止通过机械拉伸模块、字号或内边距填补空白。
+- Kindle 安装文档增加设备方向、刷新波形和电池保护说明。
+- Roadmap 区分已完成横版渲染和仍需完成的 Paperwhite 3 横版真机验收。
+
+### 验证状态
+
+| 检查项 | v0.4.0 结果 |
+| --- | --- |
+| Swift Debug 构建 | 通过 |
+| Swift Release / App bundle 构建 | 通过 |
+| App 签名 `codesign --verify --deep --strict` | 通过 |
+| App 架构 | Apple Silicon `arm64` |
+| 10 个竖版 SVG | 全部通过 XML 结构检查和视觉审阅 |
+| 10 个横版 SVG | 全部通过 XML 结构检查和视觉审阅 |
+| 实际 App 竖版 PNG | `1072 × 1448` |
+| 实际 App 横版 PNG | `1448 × 1072` |
+| 电池保护运行时状态 | 默认开启，45%–55% |
+| 方向恢复 | Mac 端已验证；Kindle 脚本包含保存/恢复逻辑 |
+| 2026 年二十四节气 | 24/24 日期与香港天文台资料一致 |
+| Shell 脚本语法 | `start.sh`、`stop.sh`、`render_once.sh` 通过 |
+| Paperwhite 3 竖屏 | 已实机验证 |
+| Paperwhite 3 横屏 | Mac 帧和脚本已完成；仍需在真实设备复核 FBInk 方向、裁切和触控坐标 |
+
+### 从旧版本升级
+
+1. 在 Mac 上重新构建并替换 `KindleDashboard.app`。
+2. 将最新版 `kindle-extension/kindledashboard/` 同步到 Kindle。
+3. 从 KUAL 停止旧 Dashboard，再启动新版，让脚本记录正确的初始方向。
+4. 在 Mac 顶栏“设置”中选择竖屏或横屏。
+5. 检查菜单中的 Kindle 回执，确认轻刷新/完整刷新和设备电量正常上报。
+6. 长期插电使用时建议保留默认 45%–55% 电池保护。
+
+升级不会要求导入日历账号或重新授权 Calendar / Reminders。若曾给旧版本授权，可在 macOS 系统设置中手动撤销。
+
+### 已知限制
+
+- 横版已通过 Mac 端真实运行帧验证，但 Paperwhite 3 真机横屏仍需要最终验收。
+- 天气位置目前由现有天气数据源决定，尚未提供独立位置设置界面。
+- 音乐控制目前面向 macOS Music，未实现完整播放进度与第三方播放器适配。
+- Markdown 支持分页阅读，但顶栏内还没有更细的目录、跳页和搜索控件。
+- 截图投射尚未提供交互式裁剪、灰阶和抖动参数。
+- 本地 HTTP 服务默认监听 `8787`，适合可信局域网；不要直接暴露到公网。
 
 ## 项目定位
 
@@ -49,12 +365,12 @@ KindleDashboard 不是传统意义上的第二显示器。它把 Kindle 当成�
 
 - Mac 端运行一个本地服务和顶栏控制器。
 - Kindle 端通过 KUAL 扩展拉取 Mac 渲染好的 PNG 画面。
-- 所有核心内容都按 Kindle Paperwhite 3 的竖屏 1072 x 1448 分辨率设计。
+- 所有核心内容都为 Kindle Paperwhite 3 的竖屏 `1072 × 1448` 和横屏 `1448 × 1072` 分别排版。
 - 页面以中文为主，强调远距离一眼能看懂，而不是把电脑屏幕缩小塞进去。
 
 这个方案特别适合：
 
-- 桌面常驻信息牌：天气、时间、日程、音乐、系统状态。
+- 桌面常驻信息牌：天气、时间、双历、音乐、系统状态。
 - Codex / agent 工作板：显示当前任务、最近工作、下一步。
 - 操作步骤对照屏：把 Markdown 文档投射到 Kindle，边操作边看。
 - 低打扰屏保：离开电脑时显示时间、日期或简单状态。
@@ -68,7 +384,9 @@ KindleDashboard 不是传统意义上的第二显示器。它把 Kindle 当成�
 - **Markdown 投射**：上传或输入 Markdown，按页显示，适合步骤文档。
 - **图片/截图投射**：把图片或屏幕截图转换为 Kindle 画面。
 - **音乐控制页**：显示播放状态，并预留上一曲、播放/暂停、下一曲交互。
-- **实验性电池保护**：提供充电守护脚本，用于长期插电时降低电池压力。
+- **横竖双布局**：Mac 顶栏切换真实竖版或横版帧，选择会在下次启动时保留。
+- **本地双历**：不访问系统日历或提醒事项，本地显示公历、农历和二十四节气。
+- **默认电池保护**：首次启动默认开启 45%–55% 充电守护，用于长期插电时降低电池压力。
 
 ## 适配设备
 
@@ -76,7 +394,7 @@ KindleDashboard 不是传统意义上的第二显示器。它把 Kindle 当成�
 
 | 设备 | 状态 | 说明 |
 | --- | --- | --- |
-| Kindle Paperwhite 3 / PW3 | 已验证 | 1072 x 1448 竖屏布局，KUAL + FBInk 渲染 |
+| Kindle Paperwhite 3 / PW3 | 竖屏已实机验证 | `1072 × 1448` 竖版；`1448 × 1072` 横版帧已完成本机渲染 QA，仍需在设备横屏状态复核 FBInk |
 
 理论上可尝试：
 
@@ -132,7 +450,7 @@ Kindle 负责：
 - 用 `curl` 拉取 Mac 端 PNG。
 - 用 `fbink` 显示画面。
 - 在 Clean Dashboard 模式中暂停原生状态栏。
-- 按固定策略执行轻刷新和全刷新。
+- 按 Mac 设置执行轻刷新和全刷新，并把实际执行模式回报给 Mac。
 - 上报电量和充电状态。
 
 ## 快速开始
@@ -261,7 +579,8 @@ Mac 顶栏控制端是这个项目的核心亮点：Kindle 只负责稳定显示
 | 页面切换 | 首页、Codex、音乐、天气、日历、专注、系统、屏保、文档、图片 | 不碰 Kindle 就能换内容 |
 | 立即刷新 Kindle | 请求 Kindle 马上拉取新画面 | 切换页面或更新文档后立即生效 |
 | Kindle 背光 | 开关 Kindle 前光，并在菜单里显示已开启/已关闭 | 夜间或弱光环境下不用进 Kindle 设置 |
-| 电池保护 | 开关 45%-55% 充电守护，并在菜单里显示已开启/已关闭 | 长期插电时减少满电压力 |
+| 电池保护 | 默认开启 45%-55% 充电守护，并记住用户选择 | 长期插电时减少满电压力 |
+| 横竖布局 | 在 `1072 × 1448` 竖版与 `1448 × 1072` 横版之间切换 | 按 Kindle 摆放方式使用独立排版 |
 | 刷新策略 | 调整轻刷新和全刷新频率，页面切换立即轻刷新 | 明确知道屏幕为何何时刷新，并按使用场景控制闪屏频率 |
 | Markdown 文档 | 选择 `.md` / `.markdown` / 文本文档并分页投射 | 操作步骤可以放在 Kindle 上对照 |
 | 图片/截图投射 | 选择图片或投射当前截屏 | 临时参考图、流程图、截图可直接上屏 |
@@ -285,6 +604,8 @@ Mac 顶栏控制端是这个项目的核心亮点：Kindle 只负责稳定显示
 - 图片/截图
 
 切换页面后，Mac 会立即让 Kindle 轻刷新一次，不必等下一轮定时刷新。
+
+切换横竖布局时，Mac 会输出对应尺寸的真实帧，Kindle 扩展会请求匹配的设备方向。停止 Dashboard 后会恢复启动前的 Kindle 方向。
 
 ### 从 Kindle 切换页面
 
@@ -348,7 +669,13 @@ Kindle 自动刷新策略仍会继续运行。
 
 ### 日历
 
-用于快速确认今天是否有日程。后续可以接入系统日历或 CalDAV。
+用于快速确认日期和季节信息，不读取日程，也不需要同步或授权：
+
+- 公历月历与今天高亮。
+- 每个日期对应的农历日期。
+- 干支纪年与生肖。
+- 二十四节气及下一节气倒计时。
+- 当前周次、全年天数进度与剩余天数。
 
 ### Markdown 文档
 
@@ -410,12 +737,14 @@ Kindle 端会尽量调用设备可用的前光控制命令。当前默认亮度�
 
 这个项目经常会让 Kindle 长期插电使用。长期满电并持续充电会增加电池压力。
 
-v0.2 提供实验性的充电守护思路：
+Mac App 首次启动默认开启充电守护，用户关闭后会记住选择：
 
 - 目标区间约为 45% - 55%。
 - 高于上限时尝试暂停充电。
 - 低于下限时恢复充电。
-- 失败时应能手动 restore。
+- Mac 暂时离线时继续按最后一次保护设置运行。
+- 停止 Dashboard 或守护进程退出时恢复正常充电。
+- 失败时仍可通过 KUAL 手动 restore。
 
 Mac 顶栏菜单会显示当前保护状态：
 
@@ -535,6 +864,8 @@ sips -s format png /tmp/kindledashboard-home.svg --out docs/assets/previews/home
 
 swift run KindleDashboard --dump-preview weather > /tmp/kindledashboard-weather.svg
 sips -s format png /tmp/kindledashboard-weather.svg --out docs/assets/previews/weather.png
+
+swift run KindleDashboard --dump-preview calendar --landscape > /tmp/kindledashboard-calendar-landscape.svg
 ```
 
 `--dump-mode <mode>` 会读取实时天气、Codex 和 Mac 状态，只适合本地视觉检查，不应直接用于公开仓库截图。
@@ -626,8 +957,8 @@ KindleDashboard 的 UI 不追求把电脑窗口复制过去，而是遵循副屏
 - 只显示能帮助下一步行动的信息。
 - 重点信息必须远距离一眼可读。
 - 少用细线、小字和密集表格。
-- 页面以竖屏为唯一主布局，减少维护成本。
-- 底部小卡片常驻，上方大区域承载主功能。
+- 横竖版使用独立信息架构，不通过旋转或等比缩放复用布局。
+- 竖版强调纵向阅读节奏，横版强调左右分区和并行扫视。
 - 调试字段、URL、端口等默认不出现在 Kindle 主界面。
 - 黑白对比要强，但避免大面积无意义黑边。
 
@@ -635,12 +966,12 @@ KindleDashboard 的 UI 不追求把电脑窗口复制过去，而是遵循副屏
 
 近期方向：
 
-- 更稳定的系统日历接入。
 - 更完整的音乐播放控制。
 - 更清晰的 Markdown 分页控制。
 - 支持从 Mac 菜单选择底部小组件组合。
 - 增加更多 Kindle 型号的分辨率适配。
 - 增加截图投射的裁剪和对比度调节。
+- 在 Paperwhite 3 真机横屏状态验证 FBInk 方向、裁切与触控坐标。
 
 暂不作为 v0.2 目标：
 

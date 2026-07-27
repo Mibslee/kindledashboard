@@ -97,6 +97,8 @@ struct AppSnapshot {
     let batteryLowerLimit: Int
     let batteryUpperLimit: Int
     let kindleBatteryText: String
+    let lastKindleRenderMode: String?
+    let lastKindleRenderAt: Date?
     let documentTitle: String
     let documentMarkdown: String
     let documentPage: Int
@@ -106,7 +108,15 @@ struct AppSnapshot {
 }
 
 final class AppState: @unchecked Sendable {
+    private enum DefaultsKey {
+        static let lightRefreshInterval = "KindleDashboard.LightRefreshInterval"
+        static let fullRefreshInterval = "KindleDashboard.FullRefreshInterval"
+        static let orientation = "KindleDashboard.Orientation"
+        static let batteryProtectionEnabled = "KindleDashboard.BatteryProtectionEnabled"
+    }
+
     private let lock = NSLock()
+    private let defaults: UserDefaults
     private var mode: KindleMode = .home
     private var orientation: KindleOrientation = .portrait
     private var cycleEnabled = false
@@ -116,10 +126,12 @@ final class AppState: @unchecked Sendable {
     private var fullRefreshInterval = 300
     private var frontlightEnabled = false
     private var frontlightLevel = 10
-    private var batteryProtectionEnabled = false
+    private var batteryProtectionEnabled = true
     private var batteryLowerLimit = 45
     private var batteryUpperLimit = 55
     private var kindleBatteryText = "Kindle --"
+    private var lastKindleRenderMode: String?
+    private var lastKindleRenderAt: Date?
     private var lastCycle = Date()
     private var documentTitle = "操作步骤"
     private var documentPage = 0
@@ -134,6 +146,25 @@ final class AppState: @unchecked Sendable {
     private var imageDataURI = ""
     private var imageMeta = "从 Mac 顶栏选择图片或截屏"
 
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let savedLight = defaults.integer(forKey: DefaultsKey.lightRefreshInterval)
+        let savedFull = defaults.integer(forKey: DefaultsKey.fullRefreshInterval)
+        if savedLight > 0 {
+            lightRefreshInterval = min(300, max(10, savedLight))
+        }
+        if savedFull > 0 {
+            fullRefreshInterval = min(1800, max(120, savedFull))
+        }
+        if let savedOrientation = defaults.string(forKey: DefaultsKey.orientation),
+           let value = KindleOrientation(rawValue: savedOrientation) {
+            orientation = value
+        }
+        if defaults.object(forKey: DefaultsKey.batteryProtectionEnabled) != nil {
+            batteryProtectionEnabled = defaults.bool(forKey: DefaultsKey.batteryProtectionEnabled)
+        }
+    }
+
     func setMode(_ newMode: KindleMode) {
         lock.lock()
         mode = newMode
@@ -145,6 +176,7 @@ final class AppState: @unchecked Sendable {
     func setOrientation(_ newOrientation: KindleOrientation) {
         lock.lock()
         orientation = newOrientation
+        defaults.set(newOrientation.rawValue, forKey: DefaultsKey.orientation)
         bumpRefreshLocked()
         lock.unlock()
     }
@@ -166,6 +198,7 @@ final class AppState: @unchecked Sendable {
     func setLightRefreshInterval(_ seconds: Int) {
         lock.lock()
         lightRefreshInterval = min(300, max(10, seconds))
+        defaults.set(lightRefreshInterval, forKey: DefaultsKey.lightRefreshInterval)
         bumpRefreshLocked()
         lock.unlock()
     }
@@ -173,6 +206,7 @@ final class AppState: @unchecked Sendable {
     func setFullRefreshInterval(_ seconds: Int) {
         lock.lock()
         fullRefreshInterval = min(1800, max(120, seconds))
+        defaults.set(fullRefreshInterval, forKey: DefaultsKey.fullRefreshInterval)
         bumpRefreshLocked()
         lock.unlock()
     }
@@ -195,6 +229,7 @@ final class AppState: @unchecked Sendable {
     func setBatteryProtectionEnabled(_ enabled: Bool) {
         lock.lock()
         batteryProtectionEnabled = enabled
+        defaults.set(enabled, forKey: DefaultsKey.batteryProtectionEnabled)
         bumpRefreshLocked()
         lock.unlock()
     }
@@ -215,6 +250,15 @@ final class AppState: @unchecked Sendable {
         if kindleBatteryText != nextText {
             kindleBatteryText = nextText
         }
+        lock.unlock()
+    }
+
+    func recordKindleRender(mode: String?) {
+        let normalized = (mode ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard ["light", "full", "deep"].contains(normalized) else { return }
+        lock.lock()
+        lastKindleRenderMode = normalized
+        lastKindleRenderAt = Date()
         lock.unlock()
     }
 
@@ -280,6 +324,8 @@ final class AppState: @unchecked Sendable {
             batteryLowerLimit: batteryLowerLimit,
             batteryUpperLimit: batteryUpperLimit,
             kindleBatteryText: kindleBatteryText,
+            lastKindleRenderMode: lastKindleRenderMode,
+            lastKindleRenderAt: lastKindleRenderAt,
             documentTitle: documentTitle,
             documentMarkdown: documentMarkdown,
             documentPage: documentPage,
@@ -409,6 +455,24 @@ struct DashboardModel {
             notes: notes,
             footer: footer,
             footerRight: value,
+            imageDataURI: imageDataURI,
+            imageMeta: imageMeta,
+            weatherCondition: weatherCondition,
+            weatherHours: weatherHours
+        )
+    }
+
+    func withOrientation(_ value: KindleOrientation) -> DashboardModel {
+        DashboardModel(
+            mode: mode,
+            orientation: value,
+            generatedAt: generatedAt,
+            headline: headline,
+            subhead: subhead,
+            metrics: metrics,
+            notes: notes,
+            footer: footer,
+            footerRight: footerRight,
             imageDataURI: imageDataURI,
             imageMeta: imageMeta,
             weatherCondition: weatherCondition,
@@ -545,6 +609,234 @@ struct MacHealthSnapshot {
     let processRows: [String]
 }
 
+struct SolarTermOccurrence {
+    let name: String
+    let date: Date
+}
+
+enum TraditionalCalendar {
+    private struct SolarTermDefinition {
+        let name: String
+        let month: Int
+        let longitude: Double
+    }
+
+    private static let solarTermDefinitions = [
+        SolarTermDefinition(name: "小寒", month: 1, longitude: 285),
+        SolarTermDefinition(name: "大寒", month: 1, longitude: 300),
+        SolarTermDefinition(name: "立春", month: 2, longitude: 315),
+        SolarTermDefinition(name: "雨水", month: 2, longitude: 330),
+        SolarTermDefinition(name: "惊蛰", month: 3, longitude: 345),
+        SolarTermDefinition(name: "春分", month: 3, longitude: 0),
+        SolarTermDefinition(name: "清明", month: 4, longitude: 15),
+        SolarTermDefinition(name: "谷雨", month: 4, longitude: 30),
+        SolarTermDefinition(name: "立夏", month: 5, longitude: 45),
+        SolarTermDefinition(name: "小满", month: 5, longitude: 60),
+        SolarTermDefinition(name: "芒种", month: 6, longitude: 75),
+        SolarTermDefinition(name: "夏至", month: 6, longitude: 90),
+        SolarTermDefinition(name: "小暑", month: 7, longitude: 105),
+        SolarTermDefinition(name: "大暑", month: 7, longitude: 120),
+        SolarTermDefinition(name: "立秋", month: 8, longitude: 135),
+        SolarTermDefinition(name: "处暑", month: 8, longitude: 150),
+        SolarTermDefinition(name: "白露", month: 9, longitude: 165),
+        SolarTermDefinition(name: "秋分", month: 9, longitude: 180),
+        SolarTermDefinition(name: "寒露", month: 10, longitude: 195),
+        SolarTermDefinition(name: "霜降", month: 10, longitude: 210),
+        SolarTermDefinition(name: "立冬", month: 11, longitude: 225),
+        SolarTermDefinition(name: "小雪", month: 11, longitude: 240),
+        SolarTermDefinition(name: "大雪", month: 12, longitude: 255),
+        SolarTermDefinition(name: "冬至", month: 12, longitude: 270)
+    ]
+
+    private static let lunarMonths = [
+        "正月", "二月", "三月", "四月", "五月", "六月",
+        "七月", "八月", "九月", "十月", "冬月", "腊月"
+    ]
+    private static let lunarDays = [
+        "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
+        "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+        "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"
+    ]
+    private static let heavenlyStems = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
+    private static let earthlyBranches = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
+    private static let zodiacAnimals = ["鼠", "牛", "虎", "兔", "龙", "蛇", "马", "羊", "猴", "鸡", "狗", "猪"]
+
+    static func lunarDateText(_ date: Date) -> String {
+        let components = lunarComponents(for: date)
+        return "农历\(components.monthText)\(components.dayText)"
+    }
+
+    static func lunarYearText(_ date: Date) -> String {
+        let components = lunarComponents(for: date)
+        let yearIndex = max(1, components.cyclicalYear) - 1
+        let stem = heavenlyStems[yearIndex % heavenlyStems.count]
+        let branch = earthlyBranches[yearIndex % earthlyBranches.count]
+        let zodiac = zodiacAnimals[yearIndex % zodiacAnimals.count]
+        return "\(stem)\(branch)年 · \(zodiac)"
+    }
+
+    static func lunarCellText(_ date: Date) -> String {
+        let components = lunarComponents(for: date)
+        if components.day == 1 {
+            return components.monthText
+        }
+        return components.dayText
+    }
+
+    static func solarTerms(in year: Int) -> [SolarTermOccurrence] {
+        solarTermDefinitions.compactMap { definition in
+            guard let date = solarTermDate(
+                year: year,
+                month: definition.month,
+                longitude: definition.longitude
+            ) else {
+                return nil
+            }
+            return SolarTermOccurrence(name: definition.name, date: date)
+        }
+    }
+
+    static func solarTerm(on date: Date) -> SolarTermOccurrence? {
+        let calendar = gregorianCalendar()
+        let year = calendar.component(.year, from: date)
+        return solarTerms(in: year).first { calendar.isDate($0.date, inSameDayAs: date) }
+    }
+
+    static func solarTermCellText(_ date: Date) -> String? {
+        solarTerm(on: date)?.name
+    }
+
+    static func solarTermSummary(_ date: Date) -> String {
+        let calendar = gregorianCalendar()
+        let startOfToday = calendar.startOfDay(for: date)
+        let year = calendar.component(.year, from: date)
+        let terms = solarTerms(in: year) + solarTerms(in: year + 1)
+        if let today = terms.first(where: { calendar.isDate($0.date, inSameDayAs: date) }) {
+            return "今日节气 · \(today.name)"
+        }
+        let previous = terms.last { $0.date < startOfToday }
+        guard let next = terms.first(where: { $0.date >= startOfToday }) else {
+            return "节气数据待更新"
+        }
+        let days = max(0, calendar.dateComponents(
+            [.day],
+            from: startOfToday,
+            to: calendar.startOfDay(for: next.date)
+        ).day ?? 0)
+        let month = calendar.component(.month, from: next.date)
+        let day = calendar.component(.day, from: next.date)
+        let prefix = previous.map { "\($0.name) · " } ?? ""
+        return "\(prefix)距\(next.name) \(days)天 · \(month)月\(day)日"
+    }
+
+    static func yearProgressSummary(_ date: Date) -> String {
+        let calendar = gregorianCalendar()
+        let ordinal = calendar.ordinality(of: .day, in: .year, for: date) ?? 1
+        let year = calendar.component(.year, from: date)
+        let start = calendar.date(from: DateComponents(year: year, month: 1, day: 1)) ?? date
+        let next = calendar.date(from: DateComponents(year: year + 1, month: 1, day: 1)) ?? date
+        let total = max(365, calendar.dateComponents([.day], from: start, to: next).day ?? 365)
+        let remaining = max(0, total - ordinal)
+        return "全年第\(ordinal)天 · 已过\(ordinal * 100 / total)% · 还剩\(remaining)天"
+    }
+
+    static func weekSummary(_ date: Date) -> String {
+        let calendar = gregorianCalendar()
+        let week = calendar.component(.weekOfYear, from: date)
+        let weekdayFormatter = DateFormatter()
+        weekdayFormatter.locale = Locale(identifier: "zh_CN")
+        weekdayFormatter.dateFormat = "EEEE"
+        return "\(weekdayFormatter.string(from: date)) · 第\(week)周"
+    }
+
+    private static func lunarComponents(for date: Date) -> (
+        cyclicalYear: Int,
+        monthText: String,
+        dayText: String,
+        day: Int
+    ) {
+        var calendar = Calendar(identifier: .chinese)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = .current
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        let month = min(12, max(1, components.month ?? 1))
+        let day = min(30, max(1, components.day ?? 1))
+        let leapPrefix = components.isLeapMonth == true ? "闰" : ""
+        return (
+            cyclicalYear: components.year ?? 1,
+            monthText: leapPrefix + lunarMonths[month - 1],
+            dayText: lunarDays[day - 1],
+            day: day
+        )
+    }
+
+    private static func solarTermDate(year: Int, month: Int, longitude: Double) -> Date? {
+        let calendar = gregorianCalendar()
+        guard let monthStart = calendar.date(from: DateComponents(year: year, month: month, day: 1)),
+              let nextMonth = calendar.date(byAdding: .month, value: 1, to: monthStart) else {
+            return nil
+        }
+
+        var lower = monthStart.timeIntervalSince1970
+        var upper = nextMonth.timeIntervalSince1970
+        guard signedLongitudeDifference(at: Date(timeIntervalSince1970: lower), target: longitude) <= 0,
+              signedLongitudeDifference(at: Date(timeIntervalSince1970: upper), target: longitude) >= 0 else {
+            return nil
+        }
+
+        for _ in 0..<48 {
+            let midpoint = (lower + upper) / 2
+            let date = Date(timeIntervalSince1970: midpoint)
+            if signedLongitudeDifference(at: date, target: longitude) < 0 {
+                lower = midpoint
+            } else {
+                upper = midpoint
+            }
+        }
+        return Date(timeIntervalSince1970: upper)
+    }
+
+    private static func signedLongitudeDifference(at date: Date, target: Double) -> Double {
+        let difference = apparentSolarLongitude(at: date) - target
+        var normalized = (difference + 180).truncatingRemainder(dividingBy: 360)
+        if normalized < 0 {
+            normalized += 360
+        }
+        return normalized - 180
+    }
+
+    private static func apparentSolarLongitude(at date: Date) -> Double {
+        let julianDay = date.timeIntervalSince1970 / 86_400 + 2_440_587.5
+        let centuries = (julianDay - 2_451_545.0) / 36_525
+        let geometricLongitude = 280.46646
+            + 36_000.76983 * centuries
+            + 0.0003032 * centuries * centuries
+        let meanAnomaly = 357.52911
+            + 35_999.05029 * centuries
+            - 0.0001537 * centuries * centuries
+        let anomalyRadians = meanAnomaly * .pi / 180
+        let equationOfCenter = (1.914602 - 0.004817 * centuries - 0.000014 * centuries * centuries)
+            * sin(anomalyRadians)
+            + (0.019993 - 0.000101 * centuries) * sin(2 * anomalyRadians)
+            + 0.000289 * sin(3 * anomalyRadians)
+        let omega = (125.04 - 1_934.136 * centuries) * .pi / 180
+        let longitude = geometricLongitude + equationOfCenter - 0.00569 - 0.00478 * sin(omega)
+        var normalized = longitude.truncatingRemainder(dividingBy: 360)
+        if normalized < 0 {
+            normalized += 360
+        }
+        return normalized
+    }
+
+    private static func gregorianCalendar() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = .current
+        calendar.firstWeekday = 2
+        return calendar
+    }
+}
+
 struct DashboardData {
     static func make(snapshot: AppSnapshot) -> DashboardModel {
         let model: DashboardModel
@@ -633,7 +925,14 @@ struct DashboardData {
                     Metric(label: "周额度", value: "64%", emphasis: false),
                     Metric(label: "重置", value: "3h18m", emphasis: false)
                 ],
-                notes: ["限额状态 | 额度正常，可继续", "5h 重置 | 今天 12:48", "周重置 | 周四 08:00", "下一步 | 完成真机检查"],
+                notes: [
+                    "限额状态 | 额度正常，可继续",
+                    "5h 重置 | 今天 12:48",
+                    "周重置 | 周四 08:00",
+                    "下一步 | 完成真机检查",
+                    "横屏信息层级审计 | 09:12",
+                    "日历节气与农历校验 | 08:46"
+                ],
                 footer: common.footer, footerRight: common.footerRight
             )
         case .music:
@@ -650,8 +949,13 @@ struct DashboardData {
             return DashboardModel(
                 mode: mode, orientation: common.orientation, generatedAt: date,
                 headline: "日历", subhead: "星期六, 7月 11",
-                metrics: [Metric(label: "下一项", value: "10:30 产品评审", emphasis: true)],
-                notes: ["确认发布清单 | 今天", "整理真机反馈 | 今天"],
+                metrics: [
+                    Metric(label: "农历", value: TraditionalCalendar.lunarDateText(date), emphasis: true),
+                    Metric(label: "节气", value: TraditionalCalendar.solarTermSummary(date), emphasis: false),
+                    Metric(label: "年度", value: TraditionalCalendar.yearProgressSummary(date), emphasis: false),
+                    Metric(label: "周次", value: TraditionalCalendar.weekSummary(date), emphasis: false)
+                ],
+                notes: [],
                 footer: common.footer, footerRight: common.footerRight
             )
         case .focus:
@@ -660,7 +964,8 @@ struct DashboardData {
                 headline: "专注", subhead: "只做一件事",
                 metrics: [
                     Metric(label: "当前任务", value: "完善天气图标与总览信息层级", emphasis: true),
-                    Metric(label: "建议专注", value: "50 分钟", emphasis: false)
+                    Metric(label: "建议专注", value: "50 分钟", emphasis: false),
+                    Metric(label: "Mac", value: "负载 1.24", emphasis: false)
                 ], notes: [], footer: common.footer, footerRight: common.footerRight
             )
         case .system:
@@ -671,9 +976,15 @@ struct DashboardData {
                     Metric(label: "状态", value: "系统状态正常", emphasis: true),
                     Metric(label: "CPU", value: "使用 24%", emphasis: false),
                     Metric(label: "内存", value: "使用 58%", emphasis: false),
-                    Metric(label: "温控", value: "正常", emphasis: false)
+                    Metric(label: "温控", value: "正常", emphasis: false),
+                    Metric(label: "运行", value: "运行 6 小时", emphasis: false)
                 ],
-                notes: ["系统盘 | 使用 42%", "WindowServer | CPU 8.2% / MEM 0.6%", "Music | CPU 2.1% / MEM 0.4%"],
+                notes: [
+                    "系统盘 | 使用 42%",
+                    "WindowServer | CPU 8.2% / MEM 0.6%",
+                    "Music | CPU 2.1% / MEM 0.4%",
+                    "kernel_task | CPU 1.6% / MEM 0.2%"
+                ],
                 footer: common.footer, footerRight: common.footerRight
             )
         case .screensaver:
@@ -682,10 +993,31 @@ struct DashboardData {
                 headline: "09:30", subhead: "星期六, 7月 11",
                 metrics: [], notes: [], footer: common.footer, footerRight: common.footerRight
             )
-        case .document, .image:
+        case .document:
             return DashboardModel(
                 mode: mode, orientation: common.orientation, generatedAt: date,
-                headline: mode == .document ? "操作步骤.md" : "等待投射",
+                headline: "操作步骤.md", subhead: "第 1/2 页 · 8 行",
+                metrics: [
+                    Metric(label: "当前文档", value: "操作步骤.md", emphasis: true),
+                    Metric(label: "页码", value: "1 / 2", emphasis: false),
+                    Metric(label: "剩余", value: "1 页", emphasis: false)
+                ],
+                notes: [
+                    "连接 KindleDashboard | 标题",
+                    "确认 Mac 与 Kindle 位于同一局域网 | 正文",
+                    "从顶栏选择横屏或竖屏布局 | 正文",
+                    "开启电池保护并保持默认阈值 | 正文",
+                    "内容刷新 | 标题",
+                    "轻刷新用于日常更新 | 正文",
+                    "完整刷新用于定期清理残影 | 正文",
+                    "完成后可从顶栏切换其他页面 | 正文"
+                ],
+                footer: common.footer, footerRight: common.footerRight
+            )
+        case .image:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "等待投射",
                 subhead: "公开预览", metrics: [], notes: ["选择内容 | Mac 顶栏"],
                 footer: common.footer, footerRight: common.footerRight
             )
@@ -842,20 +1174,20 @@ struct DashboardData {
     }
 
     private static func calendar(_ snapshot: AppSnapshot) -> DashboardModel {
-        let next = nextCalendarLine()
-        let reminders = reminderLines()
+        let now = Date()
         return DashboardModel(
             mode: snapshot.mode,
             orientation: snapshot.orientation,
-            generatedAt: Date(),
+            generatedAt: now,
             headline: "日历",
             subhead: longDate(),
             metrics: [
-                Metric(label: "下一项", value: next, emphasis: true),
-                Metric(label: "待办", value: reminders.isEmpty ? "暂无待办" : "\(reminders.count) 项待办", emphasis: false),
-                Metric(label: "建议", value: (next.contains("暂未") || next.contains("暂无")) ? "留给深度工作" : "提前 10 分钟准备", emphasis: false)
+                Metric(label: "农历", value: TraditionalCalendar.lunarDateText(now), emphasis: true),
+                Metric(label: "节气", value: TraditionalCalendar.solarTermSummary(now), emphasis: false),
+                Metric(label: "年度", value: TraditionalCalendar.yearProgressSummary(now), emphasis: false),
+                Metric(label: "周次", value: TraditionalCalendar.weekSummary(now), emphasis: false)
             ],
-            notes: reminders,
+            notes: [],
             footer: footer(snapshot)
         )
     }
@@ -891,7 +1223,8 @@ struct DashboardData {
                 Metric(label: "状态", value: mac.status, emphasis: true),
                 Metric(label: "CPU", value: mac.cpu, emphasis: false),
                 Metric(label: "内存", value: mac.memory, emphasis: false),
-                Metric(label: "温控", value: mac.thermal, emphasis: false)
+                Metric(label: "温控", value: mac.thermal, emphasis: false),
+                Metric(label: "运行", value: uptimeSummary(), emphasis: false)
             ],
             notes: ["系统盘 | \(mac.disk)"] + mac.processRows.prefix(4),
             footer: footer(snapshot)
@@ -930,54 +1263,6 @@ struct DashboardData {
             notes: ["安静显示 | 已启用", "每分钟刷新 | 低干扰"],
             footer: footer(snapshot)
         )
-    }
-
-    private static func nextCalendarLine() -> String {
-        let result = CommandRunner.appleScriptResult("""
-        tell application "Calendar"
-          set startOfDay to current date
-          set time of startOfDay to 0
-          set endOfDay to startOfDay + (24 * 60 * 60)
-          set nextEvent to missing value
-          repeat with calendarRef in calendars
-            set matches to every event of calendarRef whose start date is greater than or equal to startOfDay and start date is less than endOfDay
-            repeat with eventRef in matches
-              if nextEvent is missing value or start date of eventRef is less than start date of nextEvent then
-                set nextEvent to eventRef
-              end if
-            end repeat
-          end repeat
-          if nextEvent is missing value then return ""
-          return summary of nextEvent
-        end tell
-        """)
-        if result.status != 0 {
-            return "日历未授权"
-        }
-        return result.output.isEmpty ? "暂无日程" : result.output
-    }
-
-    private static func reminderLines() -> [String] {
-        let result = CommandRunner.appleScriptResult("""
-        tell application "Reminders"
-          set matches to reminders whose completed is false
-          if (count of matches) is 0 then return ""
-          set limitCount to count of matches
-          if limitCount is greater than 6 then set limitCount to 6
-          set output to ""
-          repeat with itemRef in items 1 thru limitCount of matches
-            set output to output & name of itemRef & linefeed
-          end repeat
-          return output
-        end tell
-        """)
-        if result.status != 0 {
-            return ["提醒事项未授权 | 未连接"]
-        }
-        return result.output
-            .split(separator: "\n")
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
     }
 
     private static func markdownRows(_ markdown: String) -> [String] {
@@ -2045,19 +2330,24 @@ struct SVGRenderer {
     private let monoFont = "'SF Mono', Menlo, Monaco, monospace"
 
     func svg() -> String {
-        let size = KindleOrientation.portrait.frameSize
+        let size = model.orientation.frameSize
         let w = size.width
         let h = size.height
-        let margin = 68
-        let footerY = 1414
+        let margin = model.orientation == .portrait ? 68 : 64
+        let footerY = h - 34
         var body = ""
 
-        body += pageContent(x: margin, y: 42, width: w - margin * 2, bottom: footerY - 54)
+        body += pageContent(
+            x: margin,
+            y: model.orientation == .portrait ? 42 : 34,
+            width: w - margin * 2,
+            bottom: footerY - 50
+        )
         if model.mode != .screensaver {
             body += line(x1: margin, y1: footerY - 34, x2: w - margin, y2: footerY - 34, stroke: 2)
-            body += text("更新 \(DashboardData.clockTime())", x: margin, y: footerY, size: 23, weight: "400", family: "Menlo, Monaco, monospace")
+            body += text("更新 \(DashboardData.clockTime())", x: margin, y: footerY, size: 22, weight: "500", fill: "#555", family: monoFont)
             if !model.footerRight.isEmpty && !model.footerRight.contains("--") {
-                body += rightText(model.footerRight, rightX: w - margin, y: footerY, size: 23, weight: "400", family: "Menlo, Monaco, monospace")
+                body += rightText(model.footerRight, rightX: w - margin, y: footerY, size: 22, weight: "500", fill: "#555", family: monoFont)
             }
         }
 
@@ -2120,6 +2410,9 @@ struct SVGRenderer {
     }
 
     private func pageContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        if model.orientation == .landscapeClockwise {
+            return landscapePageContent(x: x, y: y, width: width, bottom: bottom)
+        }
         switch model.mode {
         case .home:
             return homeContent(x: x, y: y, width: width, bottom: bottom)
@@ -2142,6 +2435,498 @@ struct SVGRenderer {
         case .screensaver:
             return screensaverContent(x: x, y: y, width: width, bottom: bottom)
         }
+    }
+
+    private func landscapePageContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        switch model.mode {
+        case .home:
+            return landscapeHomeContent(x: x, y: y, width: width, bottom: bottom)
+        case .codex:
+            return landscapeCodexContent(x: x, y: y, width: width, bottom: bottom)
+        case .document:
+            return landscapeDocumentContent(x: x, y: y, width: width, bottom: bottom)
+        case .image:
+            return landscapeImageContent(x: x, y: y, width: width, bottom: bottom)
+        case .music:
+            return landscapeMusicContent(x: x, y: y, width: width, bottom: bottom)
+        case .weather:
+            return landscapeWeatherContent(x: x, y: y, width: width, bottom: bottom)
+        case .calendar:
+            return landscapeCalendarContent(x: x, y: y, width: width, bottom: bottom)
+        case .focus:
+            return landscapeFocusContent(x: x, y: y, width: width, bottom: bottom)
+        case .system:
+            return landscapeSystemContent(x: x, y: y, width: width, bottom: bottom)
+        case .screensaver:
+            return landscapeScreensaverContent(x: x, y: y, width: width, bottom: bottom)
+        }
+    }
+
+    private func landscapeHomeContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = ""
+        let leftWidth = 424
+        let gap = 34
+        let rightX = x + leftWidth + gap
+        let rightWidth = width - leftWidth - gap
+        let weather = weatherSummary(metricValue("天气", fallback: "天气待更新，--"))
+
+        body += text(model.subhead, x: x, y: y + 32, size: 27, weight: "600", fill: "#666", family: uiFont)
+        body += text(DashboardData.clockTime(model.generatedAt), x: x - 4, y: y + 150, size: 112, weight: "720", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 194, width: leftWidth, height: 210, radius: 34, fill: "#f1f1f3")
+        body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: x + 96, cy: y + 287, size: 122)
+        body += text(weather.temperature, x: x + 186, y: y + 282, size: 64, weight: "720", family: uiFont)
+        body += text("\(weather.condition) · \(humiditySummary())", x: x + 188, y: y + 338, size: 25, weight: "600", fill: "#666", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 438, width: leftWidth, height: 164, radius: 30, fill: "#111")
+        body += text(metricValue("降雨", fallback: "天气提醒"), x: x + 30, y: y + 484, size: 23, weight: "650", fill: "#bbb", family: uiFont)
+        body += wrapped(
+            metricValue("出门建议", fallback: "天气稍后更新"),
+            x: x + 30,
+            y: y + 544,
+            width: leftWidth - 60,
+            size: 36,
+            maxLines: 2,
+            fill: "#fff",
+            family: uiFont
+        )
+
+        body += text("正在处理", x: rightX, y: y + 32, size: 26, weight: "650", fill: "#666", family: uiFont)
+        body += roundedRect(x: rightX, y: y + 56, width: rightWidth, height: 350, radius: 36, fill: "#111")
+        body += roundedRect(x: rightX + 34, y: y + 88, width: 126, height: 46, radius: 23, fill: "#fff")
+        body += "<circle cx=\"\(rightX + 59)\" cy=\"\(y + 111)\" r=\"6\" fill=\"#111\"/>"
+        body += text("Codex", x: rightX + 78, y: y + 120, size: 22, weight: "700", fill: "#111", family: uiFont)
+        body += wrapped(
+            metricValue("Codex", fallback: "等待当前任务"),
+            x: rightX + 34,
+            y: y + 216,
+            width: rightWidth - 68,
+            size: 51,
+            maxLines: 2,
+            fill: "#fff",
+            family: uiFont
+        )
+        body += "<line x1=\"\(rightX + 34)\" y1=\"\(y + 292)\" x2=\"\(rightX + rightWidth - 34)\" y2=\"\(y + 292)\" stroke=\"#444\" stroke-width=\"2\"/>"
+        body += text("5 小时", x: rightX + 34, y: y + 342, size: 23, weight: "600", fill: "#aaa", family: uiFont)
+        body += text(metricValue("5h", fallback: "--"), x: rightX + 145, y: y + 344, size: 32, weight: "720", fill: "#fff", family: uiFont)
+        body += text("本周", x: rightX + 335, y: y + 342, size: 23, weight: "600", fill: "#aaa", family: uiFont)
+        body += text(metricValue("周额度", fallback: "--"), x: rightX + 425, y: y + 344, size: 32, weight: "720", fill: "#fff", family: uiFont)
+
+        body += text("设备状态", x: rightX, y: y + 472, size: 26, weight: "650", fill: "#666", family: uiFont)
+        body += roundedRect(x: rightX, y: y + 496, width: rightWidth, height: 268, radius: 34, fill: "#f6f6f7", stroke: "#dedee0", strokeWidth: 2)
+        body += "<circle cx=\"\(rightX + 42)\" cy=\"\(y + 548)\" r=\"11\" fill=\"#111\"/>"
+        body += text(metricValue("Mac", fallback: "Mac 状态不可用"), x: rightX + 68, y: y + 559, size: 34, weight: "680", family: uiFont)
+        let systemMetrics = [
+            Metric(label: "CPU", value: compactSystemValue(Metric(label: "CPU", value: metricValue("CPU", fallback: "--"), emphasis: false)), emphasis: false),
+            Metric(label: "内存", value: compactSystemValue(Metric(label: "内存", value: metricValue("内存", fallback: "--"), emphasis: false)), emphasis: false),
+            Metric(label: "温控", value: metricValue("温控", fallback: "--"), emphasis: false)
+        ]
+        body += compactMetricStrip(x: rightX + 30, y: y + 604, width: rightWidth - 60, metrics: systemMetrics, height: 126)
+        body += landscapeInfoStrip(
+            x: x,
+            y: y + 792,
+            width: width,
+            height: bottom - (y + 792) - 12,
+            metrics: [
+                Metric(label: "今天", value: TraditionalCalendar.lunarDateText(model.generatedAt), emphasis: false),
+                Metric(label: "节气", value: TraditionalCalendar.solarTermSummary(model.generatedAt), emphasis: false),
+                Metric(label: "年度", value: TraditionalCalendar.yearProgressSummary(model.generatedAt), emphasis: false)
+            ]
+        )
+        return body
+    }
+
+    private func landscapeCodexContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = landscapeHeader(title: "Codex", eyebrow: "当前工作", x: x, y: y, width: width)
+        let gap = 32
+        let leftWidth = 778
+        let rightX = x + leftWidth + gap
+        let rightWidth = width - leftWidth - gap
+        let task = model.metrics.first?.value ?? "等待 Codex 任务"
+
+        body += roundedRect(x: x, y: y + 154, width: leftWidth, height: 560, radius: 38, fill: "#111")
+        body += roundedRect(x: x + 38, y: y + 192, width: 150, height: 50, radius: 25, fill: "#fff")
+        body += "<circle cx=\"\(x + 66)\" cy=\"\(y + 217)\" r=\"7\" fill=\"#111\"/>"
+        body += text("处理中", x: x + 87, y: y + 227, size: 23, weight: "700", fill: "#111", family: uiFont)
+        body += wrapped(task, x: x + 40, y: y + 352, width: leftWidth - 80, size: 62, maxLines: 3, fill: "#fff", family: uiFont)
+        body += "<line x1=\"\(x + 40)\" y1=\"\(y + 536)\" x2=\"\(x + leftWidth - 40)\" y2=\"\(y + 536)\" stroke=\"#444\" stroke-width=\"2\"/>"
+        body += text(noteValue("限额状态", fallback: "状态可继续"), x: x + 40, y: y + 588, size: 25, weight: "600", fill: "#aaa", family: uiFont)
+        body += text("下一步", x: x + 40, y: y + 642, size: 23, weight: "600", fill: "#aaa", family: uiFont)
+        body += wrapped(noteValue("下一步", fallback: "等待下一步"), x: x + 142, y: y + 644, width: leftWidth - 182, size: 32, maxLines: 1, fill: "#fff", family: uiFont)
+
+        let quotaWidth = (rightWidth - 18) / 2
+        body += landscapeMetricCard(
+            label: "5 小时",
+            value: metricValue("5h", fallback: "--"),
+            detail: noteValue("5h 重置", fallback: metricValue("重置", fallback: "--")),
+            x: rightX,
+            y: y + 154,
+            width: quotaWidth,
+            height: 250
+        )
+        body += landscapeMetricCard(
+            label: "本周",
+            value: metricValue("周额度", fallback: "--"),
+            detail: noteValue("周重置", fallback: "--"),
+            x: rightX + quotaWidth + 18,
+            y: y + 154,
+            width: quotaWidth,
+            height: 250
+        )
+        body += roundedRect(x: rightX, y: y + 432, width: rightWidth, height: 282, radius: 34, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+        body += text("完成标准", x: rightX + 32, y: y + 482, size: 24, weight: "650", fill: "#666", family: uiFont)
+        body += "<circle cx=\"\(rightX + 56)\" cy=\"\(y + 548)\" r=\"22\" fill=\"#111\"/>"
+        body += "<path d=\"M \(rightX + 46) \(y + 548) l 7 8 l 15 -18\" fill=\"none\" stroke=\"#fff\" stroke-width=\"5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+        body += wrapped("完成当前任务，再切换上下文", x: rightX + 94, y: y + 560, width: rightWidth - 126, size: 34, maxLines: 2, fill: "#111", family: uiFont)
+        body += text("保持信息稳定、行动明确", x: rightX + 32, y: y + 668, size: 24, weight: "550", fill: "#666", family: uiFont)
+        let recentRows = Array(model.notes.dropFirst(4).prefix(2))
+        body += landscapeRecentStrip(
+            x: x,
+            y: y + 746,
+            width: width,
+            height: bottom - (y + 746) - 12,
+            title: "最近工作",
+            rows: recentRows
+        )
+        return body
+    }
+
+    private func landscapeDocumentContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = landscapeHeader(title: model.headline, eyebrow: "文档 · \(model.subhead)", x: x, y: y, width: width)
+        let sidebarWidth = 300
+        let gap = 30
+        let readerX = x + sidebarWidth + gap
+        let readerWidth = width - sidebarWidth - gap
+        let contentTop = y + 154
+        let contentHeight = bottom - contentTop - 12
+        let rows = Array(model.notes.prefix(10))
+        let splitIndex = min(rows.count, (rows.count + 1) / 2)
+        let columnWidth = (readerWidth - 72) / 2
+
+        body += roundedRect(x: x, y: contentTop, width: sidebarWidth, height: contentHeight, radius: 34, fill: "#111")
+        body += text("阅读位置", x: x + 30, y: contentTop + 54, size: 23, weight: "650", fill: "#aaa", family: uiFont)
+        body += text(metricValue("页码", fallback: "--"), x: x + 28, y: contentTop + 152, size: 68, weight: "740", fill: "#fff", family: uiFont)
+        let progressWidth = sidebarWidth - 60
+        let documentProgress = percentageValue(documentProgressValue())
+        body += roundedRect(x: x + 30, y: contentTop + 186, width: progressWidth, height: 12, radius: 6, fill: "#666")
+        body += roundedRect(x: x + 30, y: contentTop + 186, width: max(12, progressWidth * documentProgress / 100), height: 12, radius: 6, fill: "#fff")
+        body += text("剩余", x: x + 30, y: contentTop + 258, size: 22, weight: "650", fill: "#aaa", family: uiFont)
+        body += wrapped(metricValue("剩余", fallback: "--"), x: x + 30, y: contentTop + 314, width: sidebarWidth - 60, size: 34, maxLines: 1, fill: "#fff", family: uiFont)
+        body += line(x1: x + 30, y1: contentTop + 382, x2: x + sidebarWidth - 30, y2: contentTop + 382, stroke: 2)
+        body += text("翻页", x: x + 30, y: contentTop + 438, size: 22, weight: "650", fill: "#aaa", family: uiFont)
+        body += text("Mac 顶栏", x: x + 30, y: contentTop + 494, size: 31, weight: "700", fill: "#fff", family: uiFont)
+        body += wrapped("短文档保持自然留白；长文档按页阅读。", x: x + 30, y: contentTop + contentHeight - 92, width: sidebarWidth - 60, size: 22, maxLines: 2, fill: "#aaa", family: uiFont)
+
+        body += roundedRect(x: readerX, y: contentTop, width: readerWidth, height: contentHeight, radius: 34, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += line(x1: readerX + readerWidth / 2, y1: contentTop + 34, x2: readerX + readerWidth / 2, y2: contentTop + contentHeight - 34, stroke: 1)
+        body += landscapeReadableDocument(x: readerX + 30, y: contentTop + 20, width: columnWidth, bottom: contentTop + contentHeight - 24, rows: Array(rows.prefix(splitIndex)))
+        body += landscapeReadableDocument(x: readerX + readerWidth / 2 + 30, y: contentTop + 20, width: columnWidth, bottom: contentTop + contentHeight - 24, rows: Array(rows.dropFirst(splitIndex)))
+        return body
+    }
+
+    private func landscapeImageContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = landscapeHeader(title: model.headline, eyebrow: "图片 / 截屏投射", x: x, y: y, width: width)
+        let imageTop = y + 154
+        let imageHeight = bottom - imageTop - 8
+        body += roundedRect(x: x, y: imageTop, width: width, height: imageHeight, radius: 32, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        if let dataURI = model.imageDataURI, !dataURI.isEmpty {
+            body += "<image x=\"\(x + 18)\" y=\"\(imageTop + 18)\" width=\"\(width - 36)\" height=\"\(imageHeight - 36)\" preserveAspectRatio=\"xMidYMid meet\" href=\"\(dataURI)\"/>"
+        } else {
+            body += centeredText("等待图片", centerX: x + width / 2, y: imageTop + imageHeight / 2 - 8, size: 82, weight: "720", family: uiFont)
+            body += centeredText("从 Mac 顶栏选择图片或截屏", centerX: x + width / 2, y: imageTop + imageHeight / 2 + 62, size: 34, weight: "550", fill: "#666", family: uiFont)
+        }
+        return body
+    }
+
+    private func landscapeMusicContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = landscapeHeader(title: "音乐", eyebrow: metricValue("状态", fallback: "播放状态"), x: x, y: y, width: width)
+        let leftWidth = 850
+        let gap = 34
+        let rightX = x + leftWidth + gap
+        let rightWidth = width - leftWidth - gap
+        let nowPlaying = model.metrics.first?.value ?? "音乐未运行"
+        let isIdle = nowPlaying.contains("未运行") || nowPlaying.contains("未播放")
+
+        body += roundedRect(x: x, y: y + 154, width: leftWidth, height: 500, radius: 38, fill: isIdle ? "#f5f5f6" : "#111", stroke: isIdle ? "#dedee0" : nil, strokeWidth: isIdle ? 2 : 0)
+        body += text(isIdle ? "等待播放" : "正在播放", x: x + 42, y: y + 214, size: 26, weight: "650", fill: isIdle ? "#666" : "#aaa", family: uiFont)
+        body += wrapped(nowPlaying, x: x + 42, y: y + 350, width: leftWidth - 84, size: 68, maxLines: 3, fill: isIdle ? "#111" : "#fff", family: uiFont)
+        body += "<line x1=\"\(x + 42)\" y1=\"\(y + 520)\" x2=\"\(x + leftWidth - 42)\" y2=\"\(y + 520)\" stroke=\"\(isIdle ? "#d0d0d0" : "#444")\" stroke-width=\"2\"/>"
+        body += text("专辑", x: x + 42, y: y + 586, size: 24, weight: "650", fill: isIdle ? "#666" : "#aaa", family: uiFont)
+        body += wrapped(metricValue("专辑", fallback: "--"), x: x + 128, y: y + 588, width: leftWidth - 170, size: 34, maxLines: 1, fill: isIdle ? "#111" : "#fff", family: uiFont)
+
+        body += roundedRect(x: rightX, y: y + 154, width: rightWidth, height: 500, radius: 36, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += centeredText(isIdle ? "暂未播放" : metricValue("状态", fallback: "播放中"), centerX: rightX + rightWidth / 2, y: y + 286, size: 48, weight: "700", family: uiFont)
+        body += line(x1: rightX + 34, y1: y + 340, x2: rightX + rightWidth - 34, y2: y + 340, stroke: 2)
+        body += centeredText("当前专辑", centerX: rightX + rightWidth / 2, y: y + 414, size: 23, weight: "650", fill: "#666", family: uiFont)
+        body += wrapped(metricValue("专辑", fallback: "--"), x: rightX + 32, y: y + 486, width: rightWidth - 64, size: 34, maxLines: 2, fill: "#111", family: uiFont)
+
+        let controlTop = y + 682
+        let controlHeight = bottom - controlTop - 12
+        body += landscapeControlDeck(x: x, y: controlTop, width: width, height: controlHeight)
+        return body
+    }
+
+    private func landscapeWeatherContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        let current = metricValue("现在", fallback: "天气源暂不可用")
+        guard !current.contains("不可用") else {
+            return centeredText("天气暂不可用", centerX: x + width / 2, y: y + 390, size: 88, weight: "720", family: uiFont)
+                + centeredText("稍后自动刷新", centerX: x + width / 2, y: y + 470, size: 36, weight: "500", fill: "#666", family: uiFont)
+        }
+        var body = ""
+        let weather = weatherSummary(current)
+        let leftWidth = 420
+        let gap = 36
+        let rightX = x + leftWidth + gap
+        let rightWidth = width - leftWidth - gap
+
+        body += text("天气 · \(model.subhead.replacingOccurrences(of: "未来几小时 · ", with: ""))", x: x, y: y + 32, size: 27, weight: "600", fill: "#666", family: uiFont)
+        body += text(weather.temperature, x: x - 4, y: y + 176, size: 138, weight: "720", family: uiFont)
+        body += text(weather.condition, x: x, y: y + 244, size: 46, weight: "680", family: uiFont)
+        body += text(metricValue("细节", fallback: ""), x: x, y: y + 292, size: 26, weight: "600", fill: "#666", family: uiFont)
+        body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: x + leftWidth - 92, cy: y + 120, size: 138)
+        body += roundedRect(x: x, y: y + 344, width: leftWidth, height: 246, radius: 32, fill: "#111")
+        body += text(metricValue("降雨", fallback: "降雨提醒"), x: x + 30, y: y + 394, size: 23, weight: "650", fill: "#aaa", family: uiFont)
+        body += wrapped(weatherAdvice, x: x + 30, y: y + 484, width: leftWidth - 60, size: 38, maxLines: 2, fill: "#fff", family: uiFont)
+
+        body += text("接下来", x: rightX, y: y + 32, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += landscapeWeatherTimeline(x: rightX, y: y + 56, width: rightWidth, height: 534)
+        body += landscapeWeatherDetails(x: x, y: y + 620, width: width, height: bottom - (y + 620) - 12)
+        return body
+    }
+
+    private func landscapeCalendarContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        let date = model.generatedAt
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = .current
+        let day = calendar.component(.day, from: date)
+        let leftWidth = 392
+        let gap = 38
+        let rightX = x + leftWidth + gap
+        let rightWidth = width - leftWidth - gap
+        var body = ""
+
+        body += text("\(calendarYear(date))年 · \(monthTitle(date))", x: x, y: y + 32, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += text("\(day)", x: x - 8, y: y + 202, size: 178, weight: "740", family: uiFont)
+        body += text(TraditionalCalendar.weekSummary(date), x: x + 8, y: y + 262, size: 34, weight: "680", family: uiFont)
+        body += roundedRect(x: x, y: y + 310, width: leftWidth, height: 180, radius: 32, fill: "#111")
+        body += text("中国农历", x: x + 30, y: y + 360, size: 23, weight: "650", fill: "#aaa", family: uiFont)
+        body += text(TraditionalCalendar.lunarDateText(date), x: x + 30, y: y + 420, size: 43, weight: "720", fill: "#fff", family: uiFont)
+        body += text(TraditionalCalendar.lunarYearText(date), x: x + 30, y: y + 458, size: 23, weight: "600", fill: "#aaa", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 520, width: leftWidth, height: 140, radius: 28, fill: "#f1f1f3")
+        body += text("节气", x: x + 26, y: y + 562, size: 22, weight: "650", fill: "#666", family: uiFont)
+        body += wrapped(TraditionalCalendar.solarTermSummary(date), x: x + 26, y: y + 604, width: leftWidth - 52, size: 25, maxLines: 2, fill: "#111", family: uiFont)
+        body += roundedRect(x: x, y: y + 680, width: leftWidth, height: bottom - (y + 680) - 12, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += text("本月节气", x: x + 26, y: y + 726, size: 22, weight: "650", fill: "#666", family: uiFont)
+        body += wrapped(monthSolarTermsSummary(date), x: x + 26, y: y + 782, width: leftWidth - 52, size: 27, maxLines: 2, fill: "#111", family: uiFont)
+        body += line(x1: x + 26, y1: y + 834, x2: x + leftWidth - 26, y2: y + 834, stroke: 1)
+        body += text("年度进度", x: x + 26, y: y + 874, size: 22, weight: "650", fill: "#666", family: uiFont)
+        body += wrapped(TraditionalCalendar.yearProgressSummary(date), x: x + 26, y: y + 912, width: leftWidth - 52, size: 19, maxLines: 2, fill: "#111", family: uiFont)
+
+        body += text("本月", x: rightX, y: y + 32, size: 27, weight: "650", fill: "#666", family: uiFont)
+        body += roundedRect(x: rightX, y: y + 56, width: rightWidth, height: bottom - (y + 56) - 12, radius: 34, fill: "#f8f8f9", stroke: "#dedee0", strokeWidth: 2)
+        body += monthCalendarGrid(date: date, x: rightX + 24, y: y + 86, width: rightWidth - 48, rowHeight: 112, daySize: 37, secondarySize: 18)
+        return body
+    }
+
+    private func landscapeFocusContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = landscapeHeader(title: "专注", eyebrow: "只做一件事", x: x, y: y, width: width)
+        let leftWidth = 828
+        let gap = 34
+        let rightX = x + leftWidth + gap
+        let rightWidth = width - leftWidth - gap
+
+        body += roundedRect(x: x, y: y + 154, width: leftWidth, height: 500, radius: 38, fill: "#111")
+        body += text("当前任务", x: x + 42, y: y + 214, size: 25, weight: "650", fill: "#aaa", family: uiFont)
+        body += wrapped(model.metrics.first?.value ?? "等待任务", x: x + 42, y: y + 350, width: leftWidth - 84, size: 68, maxLines: 3, fill: "#fff", family: uiFont)
+        body += "<line x1=\"\(x + 42)\" y1=\"\(y + 520)\" x2=\"\(x + leftWidth - 42)\" y2=\"\(y + 520)\" stroke=\"#444\" stroke-width=\"2\"/>"
+        body += text("完成当前任务，再切换", x: x + 42, y: y + 596, size: 31, weight: "650", fill: "#bbb", family: uiFont)
+
+        body += roundedRect(x: rightX, y: y + 154, width: rightWidth, height: 500, radius: 36, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+        body += centeredText("建议专注", centerX: rightX + rightWidth / 2, y: y + 234, size: 25, weight: "650", fill: "#666", family: uiFont)
+        body += centeredText(metricValue("建议专注", fallback: "50 分钟"), centerX: rightX + rightWidth / 2, y: y + 398, size: 94, weight: "740", family: uiFont)
+        body += line(x1: rightX + 42, y1: y + 456, x2: rightX + rightWidth - 42, y2: y + 456, stroke: 2)
+        body += centeredText("结束后离开屏幕休息", centerX: rightX + rightWidth / 2, y: y + 550, size: 30, weight: "600", fill: "#666", family: uiFont)
+        body += landscapeInfoStrip(
+            x: x,
+            y: y + 682,
+            width: width,
+            height: bottom - (y + 682) - 12,
+            metrics: [
+                Metric(label: "当前", value: noteValue("只做一件事", fallback: "只做一件事"), emphasis: false),
+                Metric(label: "环境", value: noteValue("关闭额外页面", fallback: "关闭额外页面"), emphasis: false),
+                Metric(label: "Mac", value: metricValue("Mac", fallback: "就绪"), emphasis: false)
+            ]
+        )
+        return body
+    }
+
+    private func landscapeSystemContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = landscapeHeader(title: "系统", eyebrow: "Mac 健康", x: x, y: y, width: width)
+        let leftWidth = 440
+        let gap = 34
+        let rightX = x + leftWidth + gap
+        let rightWidth = width - leftWidth - gap
+
+        body += roundedRect(x: x, y: y + 154, width: leftWidth, height: 250, radius: 34, fill: "#111")
+        body += text("当前状态", x: x + 32, y: y + 206, size: 24, weight: "650", fill: "#aaa", family: uiFont)
+        body += wrapped(model.metrics.first?.value ?? "不可用", x: x + 32, y: y + 300, width: leftWidth - 64, size: 48, maxLines: 2, fill: "#fff", family: uiFont)
+        body += roundedRect(x: x, y: y + 436, width: leftWidth, height: 150, radius: 30, fill: "#f1f1f3")
+        body += text("连续运行", x: x + 30, y: y + 482, size: 23, weight: "650", fill: "#666", family: uiFont)
+        body += wrapped(metricValue("运行", fallback: "就绪"), x: x + 30, y: y + 538, width: leftWidth - 60, size: 32, maxLines: 1, fill: "#111", family: uiFont)
+        body += roundedRect(x: x, y: y + 616, width: leftWidth, height: bottom - (y + 616) - 12, radius: 34, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+        body += text("运行建议", x: x + 32, y: y + 668, size: 24, weight: "650", fill: "#666", family: uiFont)
+        body += wrapped("状态稳定时保持安静；出现温控或内存压力再介入。", x: x + 32, y: y + 754, width: leftWidth - 64, size: 34, maxLines: 3, fill: "#111", family: uiFont)
+
+        let systemMetrics = model.metrics.dropFirst().prefix(3).map { metric in
+            Metric(label: metric.label, value: compactSystemValue(metric), emphasis: metric.emphasis)
+        }
+        body += roundedRect(x: rightX, y: y + 154, width: rightWidth, height: 250, radius: 34, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += compactMetricStrip(x: rightX + 24, y: y + 190, width: rightWidth - 48, metrics: systemMetrics, height: 176)
+        body += simpleList(x: rightX, y: y + 436, width: rightWidth, bottom: bottom - 12, title: "占用较高", rows: Array(model.notes.prefix(5)), rowHeight: 104, valueSize: 32)
+        return body
+    }
+
+    private func landscapeScreensaverContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        var body = ""
+        body += centeredText(model.headline, centerX: x + width / 2, y: y + 400, size: 246, weight: "740", family: uiFont)
+        body += centeredText(model.subhead, centerX: x + width / 2, y: y + 492, size: 48, weight: "600", family: uiFont)
+        body += centeredText(TraditionalCalendar.lunarDateText(model.generatedAt), centerX: x + width / 2, y: y + 566, size: 34, weight: "550", fill: "#666", family: uiFont)
+        body += line(x1: x + 330, y1: y + 622, x2: x + width - 330, y2: y + 622, stroke: 3)
+        body += centeredText(TraditionalCalendar.solarTermSummary(model.generatedAt), centerX: x + width / 2, y: y + 694, size: 31, weight: "600", fill: "#555", family: uiFont)
+        if !model.footerRight.isEmpty && !model.footerRight.contains("--") {
+            body += centeredText(model.footerRight, centerX: x + width / 2, y: y + 762, size: 27, weight: "500", fill: "#666", family: monoFont)
+        }
+        return body
+    }
+
+    private func landscapeHeader(title: String, eyebrow: String, x: Int, y: Int, width: Int) -> String {
+        var body = ""
+        body += text(eyebrow, x: x, y: y + 30, size: 25, weight: "650", fill: "#666", family: uiFont)
+        body += text(title, x: x - 2, y: y + 112, size: 70, weight: "720", family: uiFont)
+        body += rightText(model.subhead, rightX: x + width, y: y + 106, size: 27, weight: "550", fill: "#666", family: uiFont)
+        body += line(x1: x, y1: y + 134, x2: x + width, y2: y + 134, stroke: 2)
+        return body
+    }
+
+    private func landscapeMetricCard(
+        label: String,
+        value: String,
+        detail: String,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int
+    ) -> String {
+        var body = roundedRect(x: x, y: y, width: width, height: height, radius: 32, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+        body += text(label, x: x + 28, y: y + 48, size: 23, weight: "650", fill: "#666", family: uiFont)
+        body += text(value, x: x + 28, y: y + 126, size: 58, weight: "740", family: uiFont)
+        body += progressBar(x: x + 28, y: y + 154, width: width - 56, height: 14, value: value)
+        body += text("重置 \(detail)", x: x + 28, y: y + height - 32, size: 21, weight: "550", fill: "#666", family: uiFont)
+        return body
+    }
+
+    private func landscapeInfoStrip(x: Int, y: Int, width: Int, height: Int, metrics: [Metric]) -> String {
+        let visible = Array(metrics.prefix(4))
+        guard !visible.isEmpty, height > 0 else { return "" }
+        let columnWidth = width / visible.count
+        let labelY = y + max(46, height / 2 - 30)
+        let valueY = labelY + 58
+        var body = roundedRect(x: x, y: y, width: width, height: height, radius: 30, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+        for (index, metric) in visible.enumerated() {
+            let columnX = x + index * columnWidth
+            if index > 0 {
+                body += line(x1: columnX, y1: y + 24, x2: columnX, y2: y + height - 24, stroke: 1)
+            }
+            body += text(metric.label, x: columnX + 24, y: labelY, size: 22, weight: "650", fill: "#666", family: uiFont)
+            body += wrapped(metric.value, x: columnX + 24, y: valueY, width: columnWidth - 48, size: height < 190 ? 22 : 30, maxLines: 2, fill: "#111", family: uiFont)
+        }
+        return body
+    }
+
+    private func landscapeRecentStrip(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        title: String,
+        rows: [String]
+    ) -> String {
+        guard height > 0 else { return "" }
+        let visible = rows.isEmpty ? ["暂无最近工作 | 等待记录"] : Array(rows.prefix(2))
+        let titleWidth = 220
+        let rowWidth = (width - titleWidth) / visible.count
+        var body = roundedRect(x: x, y: y, width: width, height: height, radius: 30, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+        body += text(title, x: x + 30, y: y + height / 2 + 10, size: 25, weight: "680", fill: "#555", family: uiFont)
+        for (index, note) in visible.enumerated() {
+            let row = splitRow(note)
+            let rowX = x + titleWidth + index * rowWidth
+            body += line(x1: rowX, y1: y + 24, x2: rowX, y2: y + height - 24, stroke: 1)
+            body += wrapped(row.left, x: rowX + 26, y: y + height / 2 - 4, width: rowWidth - 52, size: 28, maxLines: 1, fill: "#111", family: uiFont)
+            body += text(row.right, x: rowX + 26, y: y + height / 2 + 46, size: 21, weight: "550", fill: "#666", family: uiFont)
+        }
+        return body
+    }
+
+    private func landscapeControlDeck(x: Int, y: Int, width: Int, height: Int) -> String {
+        guard height > 0 else { return "" }
+        let controls = [
+            ("上一首", "回到上一段声音"),
+            ("播放 / 暂停", "保持当前上下文"),
+            ("下一首", "继续向前")
+        ]
+        let gap = 18
+        let labelWidth = 154
+        let cardWidth = (width - labelWidth - gap * 2) / controls.count
+        var body = ""
+        body += text("播放控制", x: x, y: y + height / 2 + 8, size: 24, weight: "650", fill: "#666", family: uiFont)
+        for (index, control) in controls.enumerated() {
+            let cardX = x + labelWidth + index * (cardWidth + gap)
+            body += roundedRect(x: cardX, y: y, width: cardWidth, height: height, radius: 28, fill: index == 1 ? "#111" : "#f5f5f6", stroke: index == 1 ? nil : "#dedee0", strokeWidth: index == 1 ? 0 : 2)
+            body += centeredText(control.0, centerX: cardX + cardWidth / 2, y: y + height / 2, size: 30, weight: "720", fill: index == 1 ? "#fff" : "#111", family: uiFont)
+            body += centeredText(control.1, centerX: cardX + cardWidth / 2, y: y + height / 2 + 54, size: 20, weight: "550", fill: index == 1 ? "#aaa" : "#666", family: uiFont)
+        }
+        return body
+    }
+
+    private func landscapeWeatherDetails(x: Int, y: Int, width: Int, height: Int) -> String {
+        guard height > 0 else { return "" }
+        let details = weatherDetailMetrics()
+        let statHeight = min(142, max(112, height / 2 - 10))
+        let adviceY = y + statHeight + 18
+        let adviceHeight = height - statHeight - 18
+        var body = landscapeInfoStrip(x: x, y: y, width: width, height: statHeight, metrics: details)
+        if adviceHeight > 0 {
+            body += roundedRect(x: x, y: adviceY, width: width, height: adviceHeight, radius: 28, fill: "#111")
+            body += text("出门建议", x: x + 28, y: adviceY + 46, size: 22, weight: "650", fill: "#aaa", family: uiFont)
+            body += wrapped(weatherAdvice, x: x + 176, y: adviceY + adviceHeight / 2 + 12, width: width - 206, size: 34, maxLines: 1, fill: "#fff", family: uiFont)
+        }
+        return body
+    }
+
+    private func landscapeWeatherTimeline(x: Int, y: Int, width: Int, height: Int) -> String {
+        let rows = Array(model.weatherHours.prefix(5))
+        guard !rows.isEmpty else {
+            return roundedRect(x: x, y: y, width: width, height: height, radius: 34, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+                + centeredText("未来几小时暂无数据", centerX: x + width / 2, y: y + height / 2, size: 38, weight: "650", fill: "#666", family: uiFont)
+        }
+        let columnWidth = width / rows.count
+        var body = roundedRect(x: x, y: y, width: width, height: height, radius: 34, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        for (index, hour) in rows.enumerated() {
+            let columnX = x + index * columnWidth
+            let centerX = columnX + columnWidth / 2
+            if index > 0 {
+                body += "<line x1=\"\(columnX)\" y1=\"\(y + 28)\" x2=\"\(columnX)\" y2=\"\(y + height - 28)\" stroke=\"#d0d0d0\" stroke-width=\"2\"/>"
+            }
+            body += centeredText(hour.time, centerX: centerX, y: y + 60, size: 23, weight: "650", fill: "#666", family: uiFont)
+            body += weatherIcon(condition: hour.condition, cx: centerX, cy: y + 148, size: 92)
+            body += centeredText(compactTemperature(hour.temperature), centerX: centerX, y: y + 248, size: 43, weight: "720", family: uiFont)
+            body += centeredText(hour.condition.label, centerX: centerX, y: y + 302, size: 23, weight: "600", fill: "#666", family: uiFont)
+            body += centeredText("\(hour.rainChance)%", centerX: centerX, y: y + 382, size: 33, weight: "700", family: uiFont)
+            body += progressBar(x: columnX + 24, y: y + 408, width: columnWidth - 48, height: 10, value: "\(hour.rainChance)%")
+        }
+        return body
     }
 
     private func homeContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
@@ -2332,22 +3117,42 @@ struct SVGRenderer {
 
     private func calendarContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
         var body = ""
-        body += pageHeading(monthTitle(model.generatedAt), subtitle: "\(calendarYear(model.generatedAt)) · \(lunarDateText(model.generatedAt))", x: x, y: y, width: width)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = .current
+        let day = calendar.component(.day, from: model.generatedAt)
+
+        body += pageHeading(
+            monthTitle(model.generatedAt),
+            subtitle: "\(calendarYear(model.generatedAt))年 · \(TraditionalCalendar.lunarYearText(model.generatedAt))",
+            x: x,
+            y: y,
+            width: width
+        )
         body += modeArt(cx: x + width - 76, cy: y + 74)
 
-        let next = model.metrics.first?.value ?? "暂无日程"
-        body += monthCalendarGrid(date: model.generatedAt, x: x, y: y + 194, width: width)
-        body += line(x1: x, y1: y + 770, x2: x + width, y2: y + 770, stroke: 3)
-        body += text("下一项", x: x, y: y + 820, size: 27, weight: "700", family: "Menlo, Monaco, monospace")
-        body += wrapped(next, x: x, y: y + 892, width: width, size: 52, maxLines: 1)
-        if model.notes.isEmpty {
-            body += line(x1: x, y1: y + 960, x2: x + width, y2: y + 960, stroke: 3)
-            body += text("待办", x: x, y: y + 1010, size: 29, weight: "700", family: "Menlo, Monaco, monospace")
-            body += rightText("暂无待办", rightX: x + width, y: y + 1010, size: 38, weight: "700")
-            body += emphasisBand(label: "可用时间", value: "今天留白，适合安排深度工作", x: x, y: y + 1080, width: width, height: 170, valueSize: 48)
-        } else {
-            body += simpleList(x: x, y: y + 960, width: width, bottom: bottom, title: "待办", rows: Array(model.notes.prefix(3)), rowHeight: 96, valueSize: 42)
-        }
+        body += roundedRect(x: x, y: y + 182, width: width, height: 158, radius: 32, fill: "#111")
+        body += text("\(day)", x: x + 32, y: y + 302, size: 116, weight: "740", fill: "#fff", family: uiFont)
+        body += text(TraditionalCalendar.weekSummary(model.generatedAt), x: x + 214, y: y + 244, size: 31, weight: "680", fill: "#fff", family: uiFont)
+        body += text(TraditionalCalendar.lunarDateText(model.generatedAt), x: x + 214, y: y + 296, size: 35, weight: "650", fill: "#ddd", family: uiFont)
+
+        body += monthCalendarGrid(
+            date: model.generatedAt,
+            x: x,
+            y: y + 366,
+            width: width,
+            rowHeight: 80,
+            daySize: 36,
+            secondarySize: 18
+        )
+
+        body += roundedRect(x: x, y: y + 956, width: width, height: 126, radius: 28, fill: "#f1f1f3")
+        body += text("节气", x: x + 28, y: y + 1001, size: 23, weight: "650", fill: "#666", family: uiFont)
+        body += wrapped(TraditionalCalendar.solarTermSummary(model.generatedAt), x: x + 28, y: y + 1052, width: width - 56, size: 32, maxLines: 1, fill: "#111", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 1108, width: width, height: 118, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += text("年度进度", x: x + 28, y: y + 1150, size: 23, weight: "650", fill: "#666", family: uiFont)
+        body += wrapped(TraditionalCalendar.yearProgressSummary(model.generatedAt), x: x + 28, y: y + 1198, width: width - 56, size: 30, maxLines: 1, fill: "#111", family: uiFont)
         return body
     }
 
@@ -2414,6 +3219,53 @@ struct SVGRenderer {
             }
         }
         return fallback
+    }
+
+    private func documentProgressValue() -> String {
+        let pageText = metricValue("页码", fallback: "1 / 1")
+        let numbers = pageText
+            .split(whereSeparator: { !$0.isNumber })
+            .compactMap { Int($0) }
+        guard numbers.count >= 2, numbers[1] > 0 else { return "100%" }
+        return "\(min(100, max(0, numbers[0] * 100 / numbers[1])))%"
+    }
+
+    private func weatherDetailMetrics() -> [Metric] {
+        let current = metricValue("现在", fallback: metricValue("天气", fallback: "--"))
+        let details = metricValue("细节", fallback: metricValue("天气细节", fallback: "--"))
+        let currentParts = current
+            .components(separatedBy: "，")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let detailParts = details
+            .components(separatedBy: "·")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let feelsLike = currentParts.first(where: { $0.contains("体感") }) ?? "体感 --"
+        let humidity = detailParts.first(where: { $0.contains("湿度") }) ?? "湿度 --"
+        let wind = detailParts.first(where: { $0.contains("风") }) ?? "风 --"
+        return [
+            Metric(label: "体感", value: feelsLike.replacingOccurrences(of: "体感", with: "").trimmingCharacters(in: .whitespaces), emphasis: false),
+            Metric(label: "湿度", value: humidity.replacingOccurrences(of: "湿度", with: "").trimmingCharacters(in: .whitespaces), emphasis: false),
+            Metric(label: "风", value: wind.replacingOccurrences(of: "风", with: "").trimmingCharacters(in: .whitespaces), emphasis: false),
+            Metric(label: "降雨峰值", value: metricValue("降雨", fallback: "--"), emphasis: false)
+        ]
+    }
+
+    private func monthSolarTermsSummary(_ date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = .current
+        let year = calendar.component(.year, from: date)
+        let month = calendar.component(.month, from: date)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        formatter.dateFormat = "M月d日"
+        let terms = TraditionalCalendar.solarTerms(in: year)
+            .filter { calendar.component(.month, from: $0.date) == month }
+            .map { "\($0.name) \(formatter.string(from: $0.date))" }
+        return terms.isEmpty ? "本月无节气数据" : terms.joined(separator: " · ")
     }
 
     private func weatherSummary(_ value: String) -> (condition: String, temperature: String) {
@@ -2498,21 +3350,15 @@ struct SVGRenderer {
         "\(Calendar.current.component(.year, from: date))"
     }
 
-    private func lunarDateText(_ date: Date) -> String {
-        let lunar = Calendar(identifier: .chinese)
-        let components = lunar.dateComponents([.month, .day], from: date)
-        let months = ["正月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "冬月", "腊月"]
-        let days = [
-            "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
-            "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
-            "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"
-        ]
-        let monthIndex = max(1, min(12, components.month ?? 1)) - 1
-        let dayIndex = max(1, min(30, components.day ?? 1)) - 1
-        return "农历\(months[monthIndex])\(days[dayIndex])"
-    }
-
-    private func monthCalendarGrid(date: Date, x: Int, y: Int, width: Int) -> String {
+    private func monthCalendarGrid(
+        date: Date,
+        x: Int,
+        y: Int,
+        width: Int,
+        rowHeight: Int = 78,
+        daySize: Int = 42,
+        secondarySize: Int = 17
+    ) -> String {
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = Locale(identifier: "zh_CN")
         calendar.timeZone = .current
@@ -2526,29 +3372,43 @@ struct SVGRenderer {
         let weekdays = ["一", "二", "三", "四", "五", "六", "日"]
         var body = ""
         for (index, weekday) in weekdays.enumerated() {
-            body += centeredText(weekday, centerX: x + columnWidth * index + columnWidth / 2, y: y + 42, size: 27, weight: "700", family: "Menlo, Monaco, monospace")
+            body += centeredText(weekday, centerX: x + columnWidth * index + columnWidth / 2, y: y + 36, size: 24, weight: "700", fill: index >= 5 ? "#555" : "#333", family: uiFont)
         }
-        body += line(x1: x, y1: y + 66, x2: x + width, y2: y + 66, stroke: 2)
+        body += line(x1: x, y1: y + 56, x2: x + width, y2: y + 56, stroke: 2)
 
         let firstWeekday = calendar.component(.weekday, from: interval.start)
         let leadingDays = (firstWeekday - calendar.firstWeekday + 7) % 7
         let todayComponents = calendar.dateComponents([.year, .month, .day], from: date)
-        let rowHeight = 78
 
         for day in days {
             let position = leadingDays + day - 1
             let column = position % 7
             let row = position / 7
             let centerX = x + column * columnWidth + columnWidth / 2
-            let baseline = y + 126 + row * rowHeight
+            let baseline = y + 104 + row * rowHeight
+            guard let cellDate = calendar.date(byAdding: .day, value: day - 1, to: interval.start) else {
+                continue
+            }
+            let secondary = TraditionalCalendar.solarTermCellText(cellDate)
+                ?? TraditionalCalendar.lunarCellText(cellDate)
             let isToday = todayComponents.day == day
                 && todayComponents.month == calendar.component(.month, from: interval.start)
                 && todayComponents.year == calendar.component(.year, from: interval.start)
             if isToday {
-                body += rect(x: centerX - 34, y: baseline - 48, width: 68, height: 62, stroke: 0, fill: "#111")
-                body += centeredText("\(day)", centerX: centerX, y: baseline, size: 42, weight: "700", fill: "#fff")
+                body += roundedRect(x: centerX - columnWidth / 2 + 5, y: baseline - daySize, width: columnWidth - 10, height: rowHeight - 8, radius: 18, fill: "#111")
+                body += centeredText("\(day)", centerX: centerX, y: baseline, size: daySize, weight: "720", fill: "#fff", family: uiFont)
+                body += centeredText(secondary, centerX: centerX, y: baseline + secondarySize + 10, size: secondarySize, weight: "600", fill: "#ddd", family: uiFont)
             } else {
-                body += centeredText("\(day)", centerX: centerX, y: baseline, size: 42, weight: "700")
+                body += centeredText("\(day)", centerX: centerX, y: baseline, size: daySize, weight: column >= 5 ? "600" : "700", fill: column >= 5 ? "#555" : "#111", family: uiFont)
+                body += centeredText(
+                    secondary,
+                    centerX: centerX,
+                    y: baseline + secondarySize + 10,
+                    size: secondarySize,
+                    weight: TraditionalCalendar.solarTermCellText(cellDate) == nil ? "500" : "700",
+                    fill: TraditionalCalendar.solarTermCellText(cellDate) == nil ? "#777" : "#111",
+                    family: uiFont
+                )
             }
         }
         return body
@@ -2719,18 +3579,30 @@ struct SVGRenderer {
         return body
     }
 
-    private var homeAdvice: String {
-        let values = model.metrics.map(\.value).joined(separator: " ")
-        if values.contains("天气源暂不可用") {
-            return "天气稍后更新，先推进项目"
+    private func landscapeReadableDocument(x: Int, y: Int, width: Int, bottom: Int, rows: [String]) -> String {
+        let rowHeight = 148
+        let capacity = max(1, (bottom - y) / rowHeight)
+        var body = ""
+
+        for (index, note) in rows.prefix(capacity).enumerated() {
+            let row = splitRow(note)
+            let rowTop = y + index * rowHeight
+            let isHeading = row.right == "标题"
+            if index > 0 {
+                body += line(x1: x, y1: rowTop, x2: x + width, y2: rowTop, stroke: 1)
+            }
+            body += wrapped(
+                row.left,
+                x: x,
+                y: rowTop + 54,
+                width: width,
+                size: isHeading ? 38 : 32,
+                maxLines: 2,
+                fill: "#111",
+                family: uiFont
+            )
         }
-        if values.contains("无日程") || values.contains("暂无日程") {
-            return "先看天气，再推进项目"
-        }
-        if values.contains("湿度") {
-            return "先看天气，再看日程"
-        }
-        return "看一眼就知道今天怎么安排"
+        return body
     }
 
     private var weatherAdvice: String {
@@ -2897,9 +3769,11 @@ struct SVGRenderer {
                 }
             }
 
-            let line = String(remaining.prefix(cut)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let punctuation = CharacterSet(charactersIn: "·|｜")
+            let line = String(remaining.prefix(cut))
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(punctuation))
             remaining.removeFirst(cut)
-            while remaining.first?.isWhitespace == true {
+            while remaining.first?.isWhitespace == true || remaining.first == "·" || remaining.first == "|" || remaining.first == "｜" {
                 remaining.removeFirst()
             }
             if !line.isEmpty {
@@ -3018,6 +3892,10 @@ final class DashboardServer: @unchecked Sendable {
             )
             return http(body: "OK\n", status: "200 OK", contentType: "text/plain; charset=utf-8")
         }
+        if cleanPath == "/kindle/render" {
+            state.recordKindleRender(mode: queryValue("mode", in: path))
+            return http(body: "OK\n", status: "200 OK", contentType: "text/plain; charset=utf-8")
+        }
 
         if let rawMode = queryValue("mode", in: path),
            let mode = KindleMode(rawValue: rawMode) {
@@ -3097,7 +3975,7 @@ final class DashboardServer: @unchecked Sendable {
 
     private func controlJSON(_ snapshot: AppSnapshot) -> String {
         """
-        {"refreshSerial":\(snapshot.refreshSerial),"refreshInterval":\(snapshot.lightRefreshInterval),"lightRefreshInterval":\(snapshot.lightRefreshInterval),"fullRefreshInterval":\(snapshot.fullRefreshInterval),"frontlightEnabled":\(snapshot.frontlightEnabled ? "true" : "false"),"frontlightLevel":\(snapshot.frontlightLevel),"batteryProtectionEnabled":\(snapshot.batteryProtectionEnabled ? "true" : "false"),"batteryLowerLimit":\(snapshot.batteryLowerLimit),"batteryUpperLimit":\(snapshot.batteryUpperLimit)}
+        {"refreshSerial":\(snapshot.refreshSerial),"orientation":"\(snapshot.orientation.rawValue)","refreshInterval":\(snapshot.lightRefreshInterval),"lightRefreshInterval":\(snapshot.lightRefreshInterval),"fullRefreshInterval":\(snapshot.fullRefreshInterval),"frontlightEnabled":\(snapshot.frontlightEnabled ? "true" : "false"),"frontlightLevel":\(snapshot.frontlightLevel),"batteryProtectionEnabled":\(snapshot.batteryProtectionEnabled ? "true" : "false"),"batteryLowerLimit":\(snapshot.batteryLowerLimit),"batteryUpperLimit":\(snapshot.batteryUpperLimit)}
         """
     }
 
@@ -3184,6 +4062,81 @@ final class DashboardServer: @unchecked Sendable {
 }
 
 @MainActor
+private final class DashboardMenuHeaderView: NSView {
+    private let titleLabel = NSTextField(labelWithString: "Kindle Dashboard")
+    private let statusLabel = NSTextField(labelWithString: "本机服务已就绪")
+    private let detailLabel = NSTextField(labelWithString: "等待 Kindle 刷新回执")
+    private let statusDot = NSView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+
+        let icon = NSImageView(image: NSImage(systemSymbolName: "rectangle.portrait.on.rectangle.portrait", accessibilityDescription: nil) ?? NSImage())
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.contentTintColor = .labelColor
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 24, weight: .medium)
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.textColor = .labelColor
+
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        statusLabel.textColor = .secondaryLabelColor
+
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        detailLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+        detailLabel.textColor = .tertiaryLabelColor
+
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+        statusDot.wantsLayer = true
+        statusDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+        statusDot.layer?.cornerRadius = 3
+
+        [icon, titleLabel, statusLabel, detailLabel, statusDot].forEach(addSubview)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            icon.topAnchor.constraint(equalTo: topAnchor, constant: 15),
+            icon.widthAnchor.constraint(equalToConstant: 28),
+            icon.heightAnchor.constraint(equalToConstant: 28),
+            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 11),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            statusDot.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            statusDot.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 7),
+            statusDot.widthAnchor.constraint(equalToConstant: 6),
+            statusDot.heightAnchor.constraint(equalToConstant: 6),
+            statusLabel.leadingAnchor.constraint(equalTo: statusDot.trailingAnchor, constant: 6),
+            statusLabel.centerYAnchor.constraint(equalTo: statusDot.centerYAnchor),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 5),
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func update(with snapshot: AppSnapshot) {
+        statusLabel.stringValue = "本机服务已就绪 · \(snapshot.mode.title)"
+        let policy = "轻刷 \(Self.interval(snapshot.lightRefreshInterval)) · 全刷 \(Self.interval(snapshot.fullRefreshInterval))"
+        guard let mode = snapshot.lastKindleRenderMode, let date = snapshot.lastKindleRenderAt else {
+            detailLabel.stringValue = policy + " · 等待设备回执"
+            return
+        }
+        let modeLabel = mode == "light" ? "轻刷" : (mode == "deep" ? "深度全刷" : "全刷")
+        let elapsed = max(0, Int(Date().timeIntervalSince(date)))
+        let timeLabel = elapsed < 60 ? "刚刚" : "\(elapsed / 60) 分钟前"
+        detailLabel.stringValue = policy + " · \(modeLabel) \(timeLabel)"
+    }
+
+    private static func interval(_ seconds: Int) -> String {
+        seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m"
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let state = AppState()
     private var statusItem: NSStatusItem!
@@ -3198,6 +4151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var frontlightMenuItems: [NSMenuItem] = []
     private var batteryProtectionMenuItems: [NSMenuItem] = []
     private var launchAtLoginMenuItem: NSMenuItem?
+    private var menuHeaderView: DashboardMenuHeaderView?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -3229,31 +4183,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(infoMenuItem("Kindle Dashboard"))
-        menu.addItem(infoMenuItem("已连接 · 本机服务"))
+        let headerItem = NSMenuItem()
+        let headerView = DashboardMenuHeaderView(frame: NSRect(x: 0, y: 0, width: 330, height: 76))
+        headerItem.view = headerView
+        menuHeaderView = headerView
+        menu.addItem(headerItem)
         menu.addItem(.separator())
+
+        let pagesItem = NSMenuItem(title: "显示页面", action: nil, keyEquivalent: "")
+        pagesItem.image = symbolImage("square.grid.2x2")
+        let pagesMenu = NSMenu()
         for mode in KindleMode.allCases {
             let item = menuItem(mode.menuTitle, #selector(selectMode(_:)), symbol: mode.menuSymbolName)
             item.representedObject = mode.rawValue
             modeMenuItems.append(item)
-            menu.addItem(item)
+            pagesMenu.addItem(item)
         }
+        pagesItem.submenu = pagesMenu
+        menu.addItem(pagesItem)
+        menu.addItem(menuItem("立即轻刷新 Kindle", #selector(refreshKindleNow), symbol: "arrow.clockwise"))
 
-        menu.addItem(.separator())
-        menu.addItem(menuItem("打开 Markdown 文档...", #selector(openMarkdownDocument), symbol: "doc.text"))
-        menu.addItem(menuItem("文档上一页", #selector(previousDocumentPage), symbol: "chevron.left"))
-        menu.addItem(menuItem("文档下一页", #selector(nextDocumentPage), symbol: "chevron.right"))
-        menu.addItem(.separator())
-        menu.addItem(menuItem("投射图片...", #selector(openProjectionImage), symbol: "photo"))
-        menu.addItem(menuItem("投射当前截屏", #selector(projectScreenshot), symbol: "camera.viewfinder"))
-
-        menu.addItem(.separator())
-        menu.addItem(menuItem("立即刷新 Kindle", #selector(refreshKindleNow), symbol: "arrow.clockwise"))
-
-        menu.addItem(.separator())
-        menu.addItem(menuItem("播放 / 暂停音乐", #selector(playPause), symbol: "playpause"))
-        menu.addItem(menuItem("下一首", #selector(nextTrack), symbol: "forward.end"))
-        menu.addItem(menuItem("上一首", #selector(previousTrack), symbol: "backward.end"))
+        let contentItem = NSMenuItem(title: "内容与投射", action: nil, keyEquivalent: "")
+        contentItem.image = symbolImage("rectangle.on.rectangle")
+        let contentMenu = NSMenu()
+        contentMenu.addItem(menuItem("打开 Markdown 文档...", #selector(openMarkdownDocument), symbol: "doc.text"))
+        contentMenu.addItem(menuItem("文档上一页", #selector(previousDocumentPage), symbol: "chevron.left"))
+        contentMenu.addItem(menuItem("文档下一页", #selector(nextDocumentPage), symbol: "chevron.right"))
+        contentMenu.addItem(.separator())
+        contentMenu.addItem(menuItem("投射图片...", #selector(openProjectionImage), symbol: "photo"))
+        contentMenu.addItem(menuItem("投射当前截屏", #selector(projectScreenshot), symbol: "camera.viewfinder"))
+        contentMenu.addItem(.separator())
+        contentMenu.addItem(menuItem("播放 / 暂停音乐", #selector(playPause), symbol: "playpause"))
+        contentMenu.addItem(menuItem("下一首", #selector(nextTrack), symbol: "forward.end"))
+        contentMenu.addItem(menuItem("上一首", #selector(previousTrack), symbol: "backward.end"))
+        contentItem.submenu = contentMenu
+        menu.addItem(contentItem)
 
         menu.addItem(.separator())
         let settings = NSMenuItem(title: "设置", action: nil, keyEquivalent: "")
@@ -3297,7 +4261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addRefreshRateItem("30 分钟", seconds: 1800, action: #selector(selectFullRefreshRate(_:)), to: fullRefreshMenu, storeIn: &fullRefreshMenuItems)
         fullRefresh.submenu = fullRefreshMenu
         settingsRefreshRateMenu.addItem(fullRefresh)
-        settingsRefreshRateMenu.addItem(infoMenuItem("页面切换：立即轻刷新"))
+        settingsRefreshRateMenu.addItem(infoMenuItem("轻刷 GL16 · 全刷 GC16 闪烁"))
         settingsRefreshRate.submenu = settingsRefreshRateMenu
         settingsMenu.addItem(settingsRefreshRate)
         settingsMenu.addItem(.separator())
@@ -3544,6 +4508,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateControlMenuState(_ existingSnapshot: AppSnapshot? = nil) {
         let snapshot = existingSnapshot ?? state.snapshot()
+        menuHeaderView?.update(with: snapshot)
         settingsMenuItem?.title = menuTitle("设置", status: snapshot.cycleEnabled ? "轮换开" : "轮换关")
 
         for item in modeMenuItems {
@@ -3557,7 +4522,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         portraitMenuItem?.title = menuTitle("竖屏布局", status: snapshot.orientation == .portrait ? "生效" : "")
         portraitMenuItem?.state = snapshot.orientation == .portrait ? .on : .off
-        landscapeMenuItem?.title = menuTitle("横屏布局", status: snapshot.orientation == .landscapeClockwise ? "生效" : "保留")
+        landscapeMenuItem?.title = menuTitle("横屏布局", status: snapshot.orientation == .landscapeClockwise ? "生效" : "")
         landscapeMenuItem?.state = snapshot.orientation == .landscapeClockwise ? .on : .off
 
         for item in lightRefreshMenuItems {
@@ -3781,9 +4746,13 @@ private func writeApplicationIcon(to path: String) -> Bool {
     return (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
 }
 
+private let commandLineOrientation: KindleOrientation = CommandLine.arguments.contains("--landscape")
+    ? .landscapeClockwise
+    : .portrait
+
 if CommandLine.arguments.contains("--dump-home-svg") {
     let state = AppState()
-    let model = DashboardData.make(snapshot: state.snapshot())
+    let model = DashboardData.make(snapshot: state.snapshot()).withOrientation(commandLineOrientation)
     print(SVGRenderer(model: model).svg())
     exit(0)
 }
@@ -3796,7 +4765,7 @@ if let iconIndex = CommandLine.arguments.firstIndex(of: "--write-app-icon"),
 if CommandLine.arguments.contains("--dump-codex-svg") {
     let state = AppState()
     state.setMode(.codex)
-    let model = DashboardData.make(snapshot: state.snapshot())
+    let model = DashboardData.make(snapshot: state.snapshot()).withOrientation(commandLineOrientation)
     print(SVGRenderer(model: model).svg())
     exit(0)
 }
@@ -3804,7 +4773,8 @@ if CommandLine.arguments.contains("--dump-codex-svg") {
 if let previewIndex = CommandLine.arguments.firstIndex(of: "--dump-preview"),
    CommandLine.arguments.indices.contains(previewIndex + 1),
    let mode = KindleMode(rawValue: CommandLine.arguments[previewIndex + 1]) {
-    print(SVGRenderer(model: DashboardData.preview(mode: mode)).svg())
+    let model = DashboardData.preview(mode: mode).withOrientation(commandLineOrientation)
+    print(SVGRenderer(model: model).svg())
     exit(0)
 }
 
@@ -3813,8 +4783,21 @@ if let dumpIndex = CommandLine.arguments.firstIndex(of: "--dump-mode"),
    let mode = KindleMode(rawValue: CommandLine.arguments[dumpIndex + 1]) {
     let state = AppState()
     state.setMode(mode)
-    let model = DashboardData.make(snapshot: state.snapshot())
+    let model = DashboardData.make(snapshot: state.snapshot()).withOrientation(commandLineOrientation)
     print(SVGRenderer(model: model).svg())
+    exit(0)
+}
+
+if let termsIndex = CommandLine.arguments.firstIndex(of: "--dump-solar-terms"),
+   CommandLine.arguments.indices.contains(termsIndex + 1),
+   let year = Int(CommandLine.arguments[termsIndex + 1]) {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.timeZone = .current
+    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+    for term in TraditionalCalendar.solarTerms(in: year) {
+        print("\(term.name)\t\(formatter.string(from: term.date))")
+    }
     exit(0)
 }
 

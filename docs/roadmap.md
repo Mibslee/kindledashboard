@@ -5,22 +5,30 @@
 - Public SwiftPM repository.
 - Mac menu-bar controller.
 - KUAL extension template.
-- Portrait-only Kindle Paperwhite 3 UI.
+- Kindle Paperwhite 3 portrait UI.
 - Clean Dashboard mode to suppress native Kindle statusbar repainting.
 - Layered refresh: 1 minute light refresh, 5 minute full refresh.
 - Kindle battery reporting in the rendered footer.
 - Markdown document projection and image/screenshot projection.
 - Documentation suitable for another agent or developer to reproduce the setup.
 
-## v0.3 Candidates
+## v0.4
+
+- Independent `1448 × 1072` landscape compositions for every page.
+- Offline dual-calendar page with daily lunar labels, heavenly-stem/earthly-branch year, zodiac, 24 solar terms, week number, and year progress.
+- Battery protection enabled by default and persisted after user changes.
+- Persisted portrait/landscape choice.
+- Calendar and Reminders permissions removed from the macOS bundle.
+
+## Next Candidates
 
 - User-configurable weather location.
-- More complete calendar/reminder permission guidance.
 - Better Markdown pagination controls from the Mac menu.
 - Improved screenshot crop, contrast, and dithering options.
 - More robust music metadata and playback controls.
 - Dock widget customization.
 - Additional Kindle model profiles.
+- Paperwhite 3 real-device verification for framebuffer orientation, crop, and FBInk behavior in landscape.
 
 ## Later
 

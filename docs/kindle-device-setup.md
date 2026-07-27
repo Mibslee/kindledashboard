@@ -127,15 +127,26 @@ Reference entry points:
 
 ## Refresh Strategy
 
-The Kindle loop uses an e-ink-friendly fixed strategy:
+The Kindle loop uses an e-ink-friendly strategy controlled from the Mac app:
 
-- Light render every 1 minute.
-- Full render every 5 minutes.
+- Light render defaults to every 1 minute and explicitly requests the non-flashing `GL16` waveform.
+- Full render defaults to every 5 minutes and explicitly requests a flashing `GC16` waveform.
 - Page changes and Mac-triggered refreshes render immediately in light mode.
 
-Light render avoids clearing the screen and does not request a full flash. Full render keeps the display clean by periodically clearing and refreshing the full frame.
+Light render avoids clearing the screen and does not request a black flash. Full render keeps the display clean by periodically clearing and flashing the full frame. The two timers are independent: an immediate light render no longer postpones the next scheduled full render.
+
+After a successful render, the Kindle reports the actual mode back through `/kindle/render`. The Mac menu header shows the last acknowledged mode and time; “等待设备回执” means the Mac policy is configured but the updated Kindle extension has not yet confirmed execution.
 
 The Kindle reports its own battery level back to the Mac through `/kindle/status`, so the rendered frame can show Kindle battery information in the lower-right footer.
+
+## Portrait and Landscape
+
+The Mac control payload includes the selected orientation:
+
+- `portrait` renders `1072 × 1448` and requests the Kindle `U` orientation.
+- `landscapeClockwise` renders `1448 × 1072` and requests the Kindle `R` orientation.
+
+`start.sh` records the orientation that was active before Dashboard startup. `stop.sh` restores that value when Dashboard stops, so using the landscape layout does not permanently change the device orientation. FBInk does not perform general software rotation; device-side orientation and frame dimensions must therefore agree.
 
 ## Battery Protection
 
