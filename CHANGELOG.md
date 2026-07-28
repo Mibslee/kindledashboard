@@ -7,16 +7,23 @@
 - Keep the Kindle framebuffer fixed at `1072 × 1448` in every mode. Landscape now uses its independent `1448 × 1072` composition and rotates only the final device PNG, without changing or detecting Kindle system orientation.
 - Add a persisted `顺时针横放 / 逆时针横放` direction switch under the Mac rotation settings; counter-clockwise placement is the default.
 - Keep the selected day’s lunar label inside its high-contrast calendar cell and prevent two-line weather/calendar summaries from touching card edges.
+- Remove the duplicated landscape weather advice and replace it with the peak-to-recovery evidence behind the recommendation.
+- Add deliberate bottom padding to the selected calendar cell so its lunar label no longer sits against the black edge.
+- Separate landscape hourly weather icons from their temperatures with a smaller icon scale and a clearer vertical rhythm.
 
 ### Added
 
 - Show the current time prominently on both portrait and landscape calendar pages.
+- Add a dedicated `生活` page combining a one-metre-readable clock, current weather, a full month calendar with per-day lunar labels, today’s lunar date, solar-term context, and short-term weather.
+- Give the `生活` page purpose-built portrait and landscape compositions: three upcoming weather points in portrait and five in landscape.
 
 ### Changed
 
 - Recalibrate meaningful UI text, metrics, labels, and supporting information for an approximately one-metre desktop viewing distance.
 - Shorten solar-term and year-progress summaries where space is constrained, preserving information without ellipsis or artificial card stretching.
-- Regenerate all 20 portrait and landscape README screenshots from the latest renderer.
+- Rebalance the landscape calendar by moving monthly solar terms and month progress into the unused space below the grid.
+- Use the empty landscape-home weather area for a concise rain-recovery forecast.
+- Expand the documented renderer set to 22 portrait and landscape screenshots, including the new `生活` page.
 
 ## v0.4.0 - 2026-07-27
 

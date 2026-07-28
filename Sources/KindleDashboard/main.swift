@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 enum KindleMode: String, CaseIterable, Identifiable {
     case home
+    case life
     case codex
     case document
     case image
@@ -21,6 +22,7 @@ enum KindleMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .home: return "首页"
+        case .life: return "生活"
         case .codex: return "Codex"
         case .document: return "文档"
         case .image: return "投射"
@@ -36,6 +38,7 @@ enum KindleMode: String, CaseIterable, Identifiable {
     var menuTitle: String {
         switch self {
         case .home: return "首页总览"
+        case .life: return "生活"
         case .codex: return "Codex 看板"
         case .document: return "Markdown 文档"
         case .image: return "图片 / 截屏"
@@ -51,6 +54,7 @@ enum KindleMode: String, CaseIterable, Identifiable {
     var menuSymbolName: String {
         switch self {
         case .home: return "house"
+        case .life: return "heart"
         case .codex: return "terminal"
         case .document: return "doc.text"
         case .image: return "camera"
@@ -338,7 +342,7 @@ final class AppState: @unchecked Sendable {
     func snapshot() -> AppSnapshot {
         lock.lock()
         if cycleEnabled, Date().timeIntervalSince(lastCycle) >= cycleInterval {
-            let visibleModes: [KindleMode] = [.home, .codex, .document, .image, .music, .weather, .calendar, .focus, .system]
+            let visibleModes: [KindleMode] = [.home, .life, .codex, .document, .image, .music, .weather, .calendar, .focus, .system]
             if let index = visibleModes.firstIndex(of: mode) {
                 mode = visibleModes[(index + 1) % visibleModes.count]
             } else {
@@ -881,6 +885,8 @@ struct DashboardData {
         switch snapshot.mode {
         case .home:
             model = home(snapshot)
+        case .life:
+            model = life(snapshot)
         case .codex:
             model = codex(snapshot)
         case .document:
@@ -936,6 +942,21 @@ struct DashboardData {
                     Metric(label: "CPU", value: "使用 24%", emphasis: false),
                     Metric(label: "内存", value: "使用 58%", emphasis: false),
                     Metric(label: "温控", value: "正常", emphasis: false)
+                ],
+                notes: [], footer: common.footer, footerRight: common.footerRight,
+                weatherCondition: .lightRain, weatherHours: weatherHours
+            )
+        case .life:
+            return DashboardModel(
+                mode: mode, orientation: common.orientation, generatedAt: date,
+                headline: "生活", subhead: "星期六, 7月 11",
+                metrics: [
+                    Metric(label: "现在", value: "小雨 +27°C，体感 +29°C", emphasis: true),
+                    Metric(label: "细节", value: "湿度 78% · 风 12 km/h", emphasis: false),
+                    Metric(label: "降雨", value: "15:00 大雨 · 88%", emphasis: false),
+                    Metric(label: "建议", value: "午后强降雨，尽量提前出门", emphasis: false),
+                    Metric(label: "农历", value: TraditionalCalendar.lunarDateText(date), emphasis: true),
+                    Metric(label: "节气", value: TraditionalCalendar.solarTermSummary(date), emphasis: false)
                 ],
                 notes: [], footer: common.footer, footerRight: common.footerRight,
                 weatherCondition: .lightRain, weatherHours: weatherHours
@@ -1084,6 +1105,32 @@ struct DashboardData {
                 Metric(label: "CPU", value: mac.cpu, emphasis: false),
                 Metric(label: "内存", value: mac.memory, emphasis: false),
                 Metric(label: "温控", value: mac.thermal, emphasis: false)
+            ],
+            notes: [],
+            footer: footer(snapshot),
+            weatherCondition: weather.condition,
+            weatherHours: weather.hourly
+        )
+    }
+
+    private static func life(_ snapshot: AppSnapshot) -> DashboardModel {
+        let now = Date()
+        let weather = weatherSnapshot()
+        let cacheLabel = weather.isCached ? " · 缓存" : ""
+        return DashboardModel(
+            mode: snapshot.mode,
+            orientation: snapshot.orientation,
+            generatedAt: now,
+            headline: "生活",
+            subhead: longDate(),
+            metrics: [
+                Metric(label: "现在", value: weather.current, emphasis: true),
+                Metric(label: "细节", value: weather.detail, emphasis: false),
+                Metric(label: "降雨", value: weather.rainSummary, emphasis: false),
+                Metric(label: "建议", value: weather.advice, emphasis: false),
+                Metric(label: "农历", value: TraditionalCalendar.lunarDateText(now), emphasis: true),
+                Metric(label: "节气", value: TraditionalCalendar.solarTermSummary(now), emphasis: false),
+                Metric(label: "天气更新", value: "\(clockTime(weather.updatedAt))\(cacheLabel)", emphasis: false)
             ],
             notes: [],
             footer: footer(snapshot),
@@ -2454,6 +2501,8 @@ struct SVGRenderer {
         switch model.mode {
         case .home:
             return homeContent(x: x, y: y, width: width, bottom: bottom)
+        case .life:
+            return lifeContent(x: x, y: y, width: width, bottom: bottom)
         case .codex:
             return codexContent(x: x, y: y, width: width, bottom: bottom)
         case .document:
@@ -2479,6 +2528,8 @@ struct SVGRenderer {
         switch model.mode {
         case .home:
             return landscapeHomeContent(x: x, y: y, width: width, bottom: bottom)
+        case .life:
+            return landscapeLifeContent(x: x, y: y, width: width, bottom: bottom)
         case .codex:
             return landscapeCodexContent(x: x, y: y, width: width, bottom: bottom)
         case .document:
@@ -2507,6 +2558,7 @@ struct SVGRenderer {
         let rightX = x + leftWidth + gap
         let rightWidth = width - leftWidth - gap
         let weather = weatherSummary(metricValue("天气", fallback: "天气待更新，--"))
+        let weatherChange = weatherChangeSummary()
 
         body += text(model.subhead, x: x, y: y + 32, size: 30, weight: "600", fill: "#555", family: uiFont)
         body += text(DashboardData.clockTime(model.generatedAt), x: x - 4, y: y + 150, size: 112, weight: "720", family: uiFont)
@@ -2529,7 +2581,11 @@ struct SVGRenderer {
             family: uiFont
         )
 
-        body += text("正在处理", x: rightX, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
+        body += roundedRect(x: x, y: y + 622, width: leftWidth, height: 142, radius: 28, fill: "#f6f6f7", stroke: "#dedee0", strokeWidth: 2)
+        body += text(weatherChange.label, x: x + 28, y: y + 664, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += wrapped(weatherChange.value, x: x + 28, y: y + 714, width: leftWidth - 56, size: 30, maxLines: 2, fill: "#111", family: uiFont)
+
+        body += text("正在处理", x: rightX, y: y + 32, size: 32, weight: "680", fill: "#555", family: uiFont)
         body += roundedRect(x: rightX, y: y + 56, width: rightWidth, height: 350, radius: 36, fill: "#111")
         body += roundedRect(x: rightX + 34, y: y + 88, width: 126, height: 46, radius: 23, fill: "#fff")
         body += "<circle cx=\"\(rightX + 59)\" cy=\"\(y + 111)\" r=\"6\" fill=\"#111\"/>"
@@ -2550,7 +2606,7 @@ struct SVGRenderer {
         body += text("本周", x: rightX + 335, y: y + 342, size: 28, weight: "600", fill: "#bbb", family: uiFont)
         body += text(metricValue("周额度", fallback: "--"), x: rightX + 425, y: y + 344, size: 32, weight: "720", fill: "#fff", family: uiFont)
 
-        body += text("设备状态", x: rightX, y: y + 472, size: 30, weight: "650", fill: "#555", family: uiFont)
+        body += text("设备状态", x: rightX, y: y + 472, size: 32, weight: "680", fill: "#555", family: uiFont)
         body += roundedRect(x: rightX, y: y + 496, width: rightWidth, height: 268, radius: 34, fill: "#f6f6f7", stroke: "#dedee0", strokeWidth: 2)
         body += "<circle cx=\"\(rightX + 42)\" cy=\"\(y + 548)\" r=\"11\" fill=\"#111\"/>"
         body += text(metricValue("Mac", fallback: "Mac 状态不可用"), x: rightX + 68, y: y + 559, size: 34, weight: "680", family: uiFont)
@@ -2571,6 +2627,74 @@ struct SVGRenderer {
                 Metric(label: "年度", value: compactYearProgressSummary(model.generatedAt), emphasis: false)
             ]
         )
+        return body
+    }
+
+    private func landscapeLifeContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        let date = model.generatedAt
+        let current = weatherSummary(metricValue("现在", fallback: "天气 --"))
+        let solarTermParts = compactSolarTermSummary(date)
+            .components(separatedBy: " · ")
+            .filter { !$0.isEmpty }
+        let leftWidth = 424
+        let gap = 36
+        let rightX = x + leftWidth + gap
+        let rightWidth = width - leftWidth - gap
+        var body = ""
+
+        body += text("生活 · \(calendarYear(date))年 \(monthTitle(date))", x: x, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
+        body += text(DashboardData.clockTime(date), x: x - 4, y: y + 154, size: 112, weight: "740", family: monoFont)
+        body += text(TraditionalCalendar.weekSummary(date), x: x, y: y + 204, size: 30, weight: "650", fill: "#555", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 228, width: leftWidth, height: 214, radius: 34, fill: "#f1f1f3")
+        body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: x + 94, cy: y + 326, size: 126)
+        body += text(current.temperature, x: x + 174, y: y + 326, size: 67, weight: "740", family: uiFont)
+        body += text(current.condition, x: x + 178, y: y + 376, size: 34, weight: "680", family: uiFont)
+        body += text(metricValue("细节", fallback: "天气稍后更新"), x: x + 30, y: y + 420, size: 28, weight: "600", fill: "#555", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 466, width: leftWidth, height: 196, radius: 32, fill: "#111")
+        body += text("今天 · 中国农历", x: x + 30, y: y + 516, size: 28, weight: "650", fill: "#bbb", family: uiFont)
+        body += text(TraditionalCalendar.lunarDateText(date), x: x + 30, y: y + 578, size: 42, weight: "720", fill: "#fff", family: uiFont)
+        body += text(solarTermParts.first ?? "节气待更新", x: x + 30, y: y + 622, size: 30, weight: "650", fill: "#ccc", family: uiFont)
+        if solarTermParts.count > 1 {
+            body += text(solarTermParts.dropFirst().joined(separator: " · "), x: x + 30, y: y + 652, size: 28, weight: "600", fill: "#aaa", family: uiFont)
+        }
+
+        body += text("本月", x: rightX, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
+        body += roundedRect(x: rightX, y: y + 56, width: rightWidth, height: 606, radius: 34, fill: "#f8f8f9", stroke: "#dedee0", strokeWidth: 2)
+        body += monthCalendarGrid(
+            date: date,
+            x: rightX + 24,
+            y: y + 82,
+            width: rightWidth - 48,
+            rowHeight: 78,
+            daySize: 38,
+            secondarySize: 22
+        )
+        body += line(x1: rightX + 28, y1: y + 584, x2: rightX + rightWidth - 28, y2: y + 584, stroke: 1)
+        body += text("本月节气", x: rightX + 30, y: y + 630, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += rightText(monthSolarTermsSummary(date), rightX: rightX + rightWidth - 30, y: y + 630, size: 28, weight: "650", fill: "#111", family: uiFont)
+
+        let forecastY = y + 694
+        let forecastHeight = max(160, bottom - forecastY - 12)
+        let hours = Array(model.weatherHours.prefix(5))
+        body += roundedRect(x: x, y: forecastY, width: width, height: forecastHeight, radius: 32, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        if hours.isEmpty {
+            body += centeredText("未来几小时天气稍后更新", centerX: x + width / 2, y: forecastY + forecastHeight / 2 + 10, size: 36, weight: "650", fill: "#555", family: uiFont)
+        } else {
+            let columnWidth = width / hours.count
+            for (index, hour) in hours.enumerated() {
+                let columnX = x + index * columnWidth
+                let centerX = columnX + columnWidth / 2
+                if index > 0 {
+                    body += line(x1: columnX, y1: forecastY + 24, x2: columnX, y2: forecastY + forecastHeight - 24, stroke: 1)
+                }
+                body += centeredText(hour.time, centerX: centerX, y: forecastY + 42, size: 28, weight: "650", fill: "#555", family: uiFont)
+                body += weatherIcon(condition: hour.condition, cx: centerX, cy: forecastY + 101, size: 64)
+                body += centeredText(compactTemperature(hour.temperature), centerX: centerX, y: forecastY + 183, size: 42, weight: "720", family: uiFont)
+                body += centeredText("\(hour.condition.label) · \(hour.rainChance)%", centerX: centerX, y: forecastY + 225, size: 28, weight: "620", fill: "#555", family: uiFont)
+            }
+        }
         return body
     }
 
@@ -2745,29 +2869,40 @@ struct SVGRenderer {
         var body = ""
 
         body += text("\(calendarYear(date))年 · \(monthTitle(date))", x: x, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
-        body += text("\(day)", x: x - 4, y: y + 202, size: 150, weight: "740", family: uiFont)
-        body += text(DashboardData.clockTime(date), x: x + 184, y: y + 154, size: 60, weight: "740", family: monoFont)
-        body += text(TraditionalCalendar.weekSummary(date), x: x + 184, y: y + 218, size: 30, weight: "680", fill: "#555", family: uiFont)
+        body += text("\(day)", x: x - 4, y: y + 202, size: 140, weight: "740", family: uiFont)
+        body += text(DashboardData.clockTime(date), x: x + 168, y: y + 154, size: 72, weight: "740", family: monoFont)
+        body += text(TraditionalCalendar.weekSummary(date), x: x + 172, y: y + 218, size: 30, weight: "680", fill: "#555", family: uiFont)
 
         body += roundedRect(x: x, y: y + 286, width: leftWidth, height: 170, radius: 32, fill: "#111")
         body += text("中国农历", x: x + 30, y: y + 336, size: 28, weight: "650", fill: "#bbb", family: uiFont)
         body += text(TraditionalCalendar.lunarDateText(date), x: x + 30, y: y + 400, size: 43, weight: "720", fill: "#fff", family: uiFont)
         body += text(TraditionalCalendar.lunarYearText(date), x: x + 30, y: y + 438, size: 28, weight: "600", fill: "#bbb", family: uiFont)
 
-        body += roundedRect(x: x, y: y + 476, width: leftWidth, height: 156, radius: 28, fill: "#f1f1f3")
-        body += text("当前节气", x: x + 26, y: y + 524, size: 28, weight: "650", fill: "#555", family: uiFont)
-        body += wrapped(compactSolarTermSummary(date), x: x + 26, y: y + 582, width: leftWidth - 52, size: 31, maxLines: 2, fill: "#111", family: uiFont)
+        body += roundedRect(x: x, y: y + 476, width: leftWidth, height: 202, radius: 28, fill: "#f1f1f3")
+        body += text("下一个节气", x: x + 26, y: y + 526, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += wrapped(compactSolarTermSummary(date), x: x + 26, y: y + 598, width: leftWidth - 52, size: 39, maxLines: 2, fill: "#111", family: uiFont)
 
-        body += roundedRect(x: x, y: y + 652, width: leftWidth, height: bottom - (y + 652) - 12, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
-        body += text("本月节气", x: x + 26, y: y + 700, size: 28, weight: "650", fill: "#555", family: uiFont)
-        body += wrapped(monthSolarTermsSummary(date), x: x + 26, y: y + 758, width: leftWidth - 52, size: 31, maxLines: 2, fill: "#111", family: uiFont)
-        body += line(x1: x + 26, y1: y + 812, x2: x + leftWidth - 26, y2: y + 812, stroke: 1)
-        body += text("年度进度", x: x + 26, y: y + 850, size: 28, weight: "650", fill: "#555", family: uiFont)
-        body += wrapped(compactYearProgressSummary(date), x: x + 26, y: y + 896, width: leftWidth - 52, size: 28, maxLines: 2, fill: "#111", family: uiFont)
+        let yearProgress = yearProgressDisplay(date)
+        body += roundedRect(x: x, y: y + 698, width: leftWidth, height: bottom - (y + 698) - 12, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        body += text("年度进度", x: x + 26, y: y + 750, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += text(yearProgress.primary, x: x + 26, y: y + 818, size: 34, weight: "680", fill: "#111", family: uiFont)
+        body += text(yearProgress.secondary, x: x + 26, y: y + 870, size: 32, weight: "620", fill: "#111", family: uiFont)
+        body += progressBar(x: x + 26, y: y + 920, width: leftWidth - 52, height: 12, value: "\(yearProgress.percent)%")
 
         body += text("本月", x: rightX, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
         body += roundedRect(x: rightX, y: y + 56, width: rightWidth, height: bottom - (y + 56) - 12, radius: 34, fill: "#f8f8f9", stroke: "#dedee0", strokeWidth: 2)
-        body += monthCalendarGrid(date: date, x: rightX + 24, y: y + 86, width: rightWidth - 48, rowHeight: 112, daySize: 42, secondarySize: 24)
+        body += monthCalendarGrid(date: date, x: rightX + 24, y: y + 86, width: rightWidth - 48, rowHeight: 92, daySize: 42, secondarySize: 24)
+        let monthPanelX = rightX + 28
+        let monthPanelWidth = rightWidth - 56
+        let monthColumnWidth = monthPanelWidth / 2
+        body += line(x1: monthPanelX, y1: y + 704, x2: monthPanelX + monthPanelWidth, y2: y + 704, stroke: 2)
+        body += text("本月节气", x: monthPanelX, y: y + 760, size: 28, weight: "650", fill: "#555", family: uiFont)
+        body += wrapped(monthSolarTermsSummary(date), x: monthPanelX, y: y + 824, width: monthColumnWidth - 32, size: 34, maxLines: 2, fill: "#111", family: uiFont)
+        body += line(x1: monthPanelX + monthColumnWidth, y1: y + 744, x2: monthPanelX + monthColumnWidth, y2: y + 928, stroke: 1)
+        body += text("月份进度", x: monthPanelX + monthColumnWidth + 30, y: y + 760, size: 28, weight: "650", fill: "#555", family: uiFont)
+        let monthProgress = monthProgressSummary(date)
+        body += wrapped(monthProgress.text, x: monthPanelX + monthColumnWidth + 30, y: y + 824, width: monthColumnWidth - 58, size: 34, maxLines: 1, fill: "#111", family: uiFont)
+        body += progressBar(x: monthPanelX + monthColumnWidth + 30, y: y + 872, width: monthColumnWidth - 58, height: 12, value: "\(monthProgress.percent)%")
         return body
     }
 
@@ -2939,9 +3074,9 @@ struct SVGRenderer {
         let adviceHeight = height - statHeight - 18
         var body = landscapeInfoStrip(x: x, y: y, width: width, height: statHeight, metrics: details)
         if adviceHeight > 0 {
-            body += roundedRect(x: x, y: adviceY, width: width, height: adviceHeight, radius: 28, fill: "#111")
-            body += text("出门建议", x: x + 28, y: adviceY + 46, size: 28, weight: "650", fill: "#bbb", family: uiFont)
-            body += wrapped(weatherAdvice, x: x + 190, y: adviceY + adviceHeight / 2 + 12, width: width - 220, size: 38, maxLines: 1, fill: "#fff", family: uiFont)
+            body += roundedRect(x: x, y: adviceY, width: width, height: adviceHeight, radius: 28, fill: "#f5f5f6", stroke: "#dedee0", strokeWidth: 2)
+            body += text("建议依据", x: x + 28, y: adviceY + 46, size: 28, weight: "650", fill: "#555", family: uiFont)
+            body += wrapped(weatherAdviceBasis(), x: x + 190, y: adviceY + adviceHeight / 2 + 12, width: width - 220, size: 36, maxLines: 1, fill: "#111", family: uiFont)
         }
         return body
     }
@@ -3018,6 +3153,71 @@ struct SVGRenderer {
             let columnX = x + 32 + index * 300
             body += text(metric.0, x: columnX, y: y + 1030, size: 28, weight: "600", fill: "#555", family: uiFont)
             body += text(metric.1.replacingOccurrences(of: "使用 ", with: ""), x: columnX, y: y + 1082, size: 42, weight: "700", family: uiFont)
+        }
+        return body
+    }
+
+    private func lifeContent(x: Int, y: Int, width: Int, bottom: Int) -> String {
+        let date = model.generatedAt
+        let current = weatherSummary(metricValue("现在", fallback: "天气 --"))
+        let solarTermParts = compactSolarTermSummary(date)
+            .components(separatedBy: " · ")
+            .filter { !$0.isEmpty }
+        var body = ""
+
+        body += text("生活 · \(calendarYear(date))年 \(monthTitle(date))", x: x, y: y + 32, size: 30, weight: "650", fill: "#555", family: uiFont)
+        body += text(DashboardData.clockTime(date), x: x - 4, y: y + 146, size: 108, weight: "740", family: monoFont)
+        body += text(TraditionalCalendar.weekSummary(date), x: x + 2, y: y + 194, size: 30, weight: "650", fill: "#555", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 222, width: width, height: 180, radius: 34, fill: "#f1f1f3")
+        body += weatherIcon(condition: model.weatherCondition ?? .unknown, cx: x + 110, cy: y + 308, size: 122)
+        body += text(current.temperature, x: x + 202, y: y + 312, size: 67, weight: "740", family: uiFont)
+        body += text(current.condition, x: x + 384, y: y + 292, size: 38, weight: "680", family: uiFont)
+        body += text(metricValue("细节", fallback: "天气稍后更新"), x: x + 386, y: y + 342, size: 29, weight: "600", fill: "#555", family: uiFont)
+        body += text(metricValue("降雨", fallback: "降雨信息稍后更新"), x: x + 386, y: y + 382, size: 28, weight: "600", fill: "#555", family: uiFont)
+
+        body += roundedRect(x: x, y: y + 426, width: width, height: 142, radius: 30, fill: "#111")
+        body += text("今日农历", x: x + 30, y: y + 474, size: 28, weight: "650", fill: "#bbb", family: uiFont)
+        body += text(TraditionalCalendar.lunarDateText(date), x: x + 30, y: y + 536, size: 42, weight: "720", fill: "#fff", family: uiFont)
+        body += line(x1: x + width / 2, y1: y + 450, x2: x + width / 2, y2: y + 544, stroke: 1)
+        body += text("节气", x: x + width / 2 + 30, y: y + 474, size: 28, weight: "650", fill: "#bbb", family: uiFont)
+        body += text(solarTermParts.first ?? "节气待更新", x: x + width / 2 + 30, y: y + 522, size: 30, weight: "680", fill: "#fff", family: uiFont)
+        if solarTermParts.count > 1 {
+            body += text(solarTermParts.dropFirst().joined(separator: " · "), x: x + width / 2 + 30, y: y + 558, size: 28, weight: "600", fill: "#bbb", family: uiFont)
+        }
+
+        body += text("本月", x: x, y: y + 620, size: 30, weight: "650", fill: "#555", family: uiFont)
+        body += roundedRect(x: x, y: y + 638, width: width, height: 518, radius: 32, fill: "#f8f8f9", stroke: "#dedee0", strokeWidth: 2)
+        body += monthCalendarGrid(
+            date: date,
+            x: x + 22,
+            y: y + 650,
+            width: width - 44,
+            rowHeight: 72,
+            daySize: 35,
+            secondarySize: 20
+        )
+        body += line(x1: x + 24, y1: y + 1120, x2: x + width - 24, y2: y + 1120, stroke: 1)
+        body += centeredText("本月节气 · \(monthSolarTermsSummary(date))", centerX: x + width / 2, y: y + 1148, size: 24, weight: "650", fill: "#555", family: uiFont)
+
+        let forecastY = y + 1178
+        let forecastHeight = max(120, bottom - forecastY - 12)
+        let hours = Array(model.weatherHours.prefix(3))
+        body += roundedRect(x: x, y: forecastY, width: width, height: forecastHeight, radius: 28, fill: "#f7f7f8", stroke: "#dedee0", strokeWidth: 2)
+        if hours.isEmpty {
+            body += centeredText("未来天气稍后更新", centerX: x + width / 2, y: forecastY + forecastHeight / 2 + 10, size: 34, weight: "650", fill: "#555", family: uiFont)
+        } else {
+            let columnWidth = width / hours.count
+            for (index, hour) in hours.enumerated() {
+                let columnX = x + index * columnWidth
+                let centerX = columnX + columnWidth / 2
+                if index > 0 {
+                    body += line(x1: columnX, y1: forecastY + 20, x2: columnX, y2: forecastY + forecastHeight - 20, stroke: 1)
+                }
+                body += centeredText(hour.time, centerX: centerX, y: forecastY + 30, size: 28, weight: "650", fill: "#555", family: uiFont)
+                body += centeredText(hour.condition.label, centerX: centerX, y: forecastY + 75, size: 30, weight: "680", family: uiFont)
+                body += centeredText("\(compactTemperature(hour.temperature)) · 降雨 \(hour.rainChance)%", centerX: centerX, y: forecastY + 116, size: 28, weight: "650", fill: "#555", family: uiFont)
+            }
         }
         return body
     }
@@ -3290,8 +3490,67 @@ struct SVGRenderer {
             Metric(label: "体感", value: feelsLike.replacingOccurrences(of: "体感", with: "").trimmingCharacters(in: .whitespaces), emphasis: false),
             Metric(label: "湿度", value: humidity.replacingOccurrences(of: "湿度", with: "").trimmingCharacters(in: .whitespaces), emphasis: false),
             Metric(label: "风", value: wind.replacingOccurrences(of: "风", with: "").trimmingCharacters(in: .whitespaces), emphasis: false),
-            Metric(label: "降雨峰值", value: metricValue("降雨", fallback: "--"), emphasis: false)
+            Metric(label: "气温范围", value: weatherTemperatureRange(), emphasis: false)
         ]
+    }
+
+    private func weatherChangeSummary() -> (label: String, value: String) {
+        let rows = Array(model.weatherHours.prefix(5))
+        guard !rows.isEmpty else {
+            return ("天气变化", "未来几小时暂无趋势数据")
+        }
+        guard let peakIndex = rows.indices.max(by: {
+            rows[$0].rainChance < rows[$1].rainChance
+        }) else {
+            return ("天气变化", "\(rows[0].time) \(rows[0].condition.label)")
+        }
+        let peak = rows[peakIndex]
+        let laterRows = Array(rows.dropFirst(peakIndex + 1))
+        if peak.rainChance >= 40, !laterRows.isEmpty {
+            let recovery = laterRows.first(where: {
+                !$0.condition.isRain || $0.rainChance <= max(25, peak.rainChance / 2)
+            }) ?? laterRows[0]
+            return (
+                "雨势回落",
+                "\(recovery.time) \(recovery.condition.label) · 降雨降至 \(recovery.rainChance)%"
+            )
+        }
+        let last = rows.last ?? rows[0]
+        return (
+            "天气变化",
+            "\(last.time) \(last.condition.label) \(compactTemperature(last.temperature)) · 降雨 \(last.rainChance)%"
+        )
+    }
+
+    private func weatherAdviceBasis() -> String {
+        let rows = Array(model.weatherHours.prefix(5))
+        guard let peakIndex = rows.indices.max(by: {
+            rows[$0].rainChance < rows[$1].rainChance
+        }) else {
+            return "天气数据不足，建议稍后再看"
+        }
+        let peak = rows[peakIndex]
+        let laterRows = Array(rows.dropFirst(peakIndex + 1))
+        if peak.rainChance >= 40 {
+            if let recovery = laterRows.first(where: {
+                !$0.condition.isRain || $0.rainChance <= max(25, peak.rainChance / 2)
+            }) {
+                return "\(peak.time) 降雨达 \(peak.rainChance)% · \(recovery.time) 回落至 \(recovery.rainChance)%"
+            }
+            return "\(peak.time) 降雨概率最高 \(peak.rainChance)%"
+        }
+        return "未来几小时最高降雨概率 \(peak.rainChance)% · 天气较稳定"
+    }
+
+    private func weatherTemperatureRange() -> String {
+        let temperatures = model.weatherHours.compactMap { hour -> Int? in
+            let numeric = hour.temperature.filter { $0.isNumber || $0 == "-" }
+            return Int(numeric)
+        }
+        guard let minimum = temperatures.min(), let maximum = temperatures.max() else {
+            return "--"
+        }
+        return minimum == maximum ? "\(minimum)°" : "\(minimum)°–\(maximum)°"
     }
 
     private func monthSolarTermsSummary(_ date: Date) -> String {
@@ -3310,6 +3569,16 @@ struct SVGRenderer {
         return terms.isEmpty ? "本月无节气数据" : terms.joined(separator: " · ")
     }
 
+    private func monthProgressSummary(_ date: Date) -> (text: String, percent: Int) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = .current
+        let day = calendar.component(.day, from: date)
+        let total = calendar.range(of: .day, in: .month, for: date)?.count ?? 30
+        let percent = min(100, max(0, Int((Double(day) / Double(max(1, total)) * 100).rounded())))
+        return ("\(day)/\(total) · \(percent)%", percent)
+    }
+
     private func compactSolarTermSummary(_ date: Date) -> String {
         let summary = TraditionalCalendar.solarTermSummary(date)
         guard let distanceRange = summary.range(of: "距") else { return summary }
@@ -3321,6 +3590,22 @@ struct SVGRenderer {
             .replacingOccurrences(of: "全年第", with: "第")
             .replacingOccurrences(of: "已过", with: "")
             .replacingOccurrences(of: "还剩", with: "剩")
+    }
+
+    private func yearProgressDisplay(_ date: Date) -> (primary: String, secondary: String, percent: Int) {
+        let parts = compactYearProgressSummary(date)
+            .components(separatedBy: "·")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let primary = parts.prefix(2).joined(separator: " · ")
+        let secondary = parts.dropFirst(2).joined(separator: " · ")
+        let percentText = parts.first(where: { $0.contains("%") }) ?? "0%"
+        let percent = Int(percentText.filter(\.isNumber)) ?? 0
+        return (
+            primary.isEmpty ? "进度待更新" : primary,
+            secondary.isEmpty ? "继续前行" : secondary,
+            min(100, max(0, percent))
+        )
     }
 
     private func weatherSummary(_ value: String) -> (condition: String, temperature: String) {
@@ -3450,7 +3735,9 @@ struct SVGRenderer {
                 && todayComponents.month == calendar.component(.month, from: interval.start)
                 && todayComponents.year == calendar.component(.year, from: interval.start)
             if isToday {
-                body += roundedRect(x: centerX - columnWidth / 2 + 5, y: baseline - daySize, width: columnWidth - 10, height: rowHeight - 8, radius: 18, fill: "#111")
+                let selectionY = baseline - daySize - 4
+                let selectionHeight = daySize + secondarySize + 22
+                body += roundedRect(x: centerX - columnWidth / 2 + 5, y: selectionY, width: columnWidth - 10, height: selectionHeight, radius: 18, fill: "#111")
                 body += centeredText("\(day)", centerX: centerX, y: baseline, size: daySize, weight: "720", fill: "#fff", family: uiFont)
                 body += centeredText(secondary, centerX: centerX, y: baseline + secondarySize + 10, size: secondarySize, weight: "600", fill: "#ddd", family: uiFont)
             } else {
